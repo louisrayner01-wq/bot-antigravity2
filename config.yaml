@@ -15,7 +15,7 @@ trading:
   pairs:
     - symbol:     "BTCUSDT_UMCBL"
       name:       "BTC"
-      enabled:    false      # Disabled — 31.8% win rate on 15m (-425% backtest). Re-enable once analysis finds a profitable TF.
+      enabled:    true
       allocation: 0.50       # 50 % of capital on BTC
 
     - symbol:     "ETHUSDT_UMCBL"
@@ -106,7 +106,7 @@ data:
   confluence_timeframe: "60"    # 1h filter applied on top of 15m signals
 
   # Analysis results older than this many days trigger a fresh analysis run
-  analysis_stale_days:  0   # 0 = always re-run (reset to 7 after first good run)
+  analysis_stale_days:  0   # 0 = force re-run on next startup (reset to 7 after)
 
   # Signal timeframe bounds — analysis picks the best TF per symbol automatically.
   #
@@ -120,5 +120,5 @@ data:
   # 15m gives proven results: 48.7% BTC / 48.3% ETH win rate in backtest.
   # Revisit this cap after the bot has 50+ live trades and we can measure whether
   # a wider TF range produces better live performance.
-  min_signal_tf_minutes: 5     # Allow 5m (data available, lower CV used as fallback)
-  max_signal_tf_minutes: 15    # Cap at 15m — proven win rates, ~23k training samples
+  min_signal_tf_minutes: 15    # 15m minimum — 5m too noisy
+  max_signal_tf_minutes: 1440  # No cap — let analysis pick the best TF per symbol across 15m/1h/4h/1d
