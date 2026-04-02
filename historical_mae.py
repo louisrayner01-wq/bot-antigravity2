@@ -236,11 +236,26 @@ class HistoricalMAEBacktest:
         all_trades: List[dict] = []
         per_pair:   Dict[str, dict] = {}
 
-        for pair_cfg in pairs:
-            symbol   = pair_cfg["symbol"]
-            name     = pair_cfg.get("name", symbol)
-            tf_min   = symbol_tf.get(symbol, "240")        # e.g. "15"
-            tf_label = _TF_LABEL.get(tf_min, f"{tf_min}m") # e.g. "15m"
+        # Build the list of (symbol, tf_min, name) to backtest.
+        # If active_strategies is available (multi-strategy engine) use it so
+        # every (symbol × TF) combo gets its own backtest result.
+        # Falls back to the old pairs × symbol_tf approach for compatibility.
+        active_strategies = getattr(strategy, "_backtest_strategies", None)
+        if active_strategies:
+            strategy_list = [
+                (s["symbol"], s["tf_min"], f"{s['name']}[{s['tf_label']}]")
+                for s in active_strategies
+            ]
+        else:
+            strategy_list = [
+                (p["symbol"],
+                 symbol_tf.get(p["symbol"], "240"),
+                 p.get("name", p["symbol"]))
+                for p in pairs
+            ]
+
+        for symbol, tf_min, name in strategy_list:
+            tf_label = _TF_LABEL.get(tf_min, f"{tf_min}m")
 
             logger.info("📐 Historical MAE backtest: %s [%s]…", name, tf_label)
 

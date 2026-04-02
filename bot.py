@@ -766,9 +766,13 @@ class TradingBot:
         strat_cfg   = self.cfg.get("strategy", {})
         buy_thresh  = strat_cfg.get("buy_threshold",  0.45)
         sell_thresh = strat_cfg.get("sell_threshold", 0.35)
-        # HTF is one step up from the current signal TF (matches _sym_htf logic)
         HTF_UP     = {"5": "60", "15": "60", "60": "240", "240": "1440", "1440": "1440"}
         htf_tf_min = HTF_UP.get(self.tf, "60")
+
+        # Pass active_strategies to the backtest so it runs on every
+        # (symbol × TF) combo, not just one TF per symbol
+        self.strategy._backtest_strategies = self.active_strategies or []
+
         result = run_historical_mae(
             strategy    = self.strategy,
             symbol_tf   = self.symbol_tf,
