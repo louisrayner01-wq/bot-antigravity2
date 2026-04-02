@@ -15,7 +15,7 @@ trading:
   pairs:
     - symbol:     "BTCUSDT_UMCBL"
       name:       "BTC"
-      enabled:    true
+      enabled:    false      # Disabled — 31.8% win rate on 15m (-425% backtest). Re-enable once analysis finds a profitable TF.
       allocation: 0.50       # 50 % of capital on BTC
 
     - symbol:     "ETHUSDT_UMCBL"
@@ -41,8 +41,8 @@ risk:
   # Risk exactly £5 per trade (absolute amount, not percentage)
   risk_per_trade_abs:   5.0
 
-  stop_loss_atr_mult:   1.5      # Stop-loss = 1.5 × ATR
-  take_profit_atr_mult: 3.0      # Final TP = 3 × ATR  →  2 : 1 risk-reward
+  stop_loss_atr_mult:   2.2      # MAE-calibrated from 2221 simulated trades (was 1.5 — too tight)
+  take_profit_atr_mult: 3.5      # MAE-calibrated from 2221 simulated trades (was 3.0)
   min_rr_ratio:         1.5      # Reject any trade where actual R/R falls below 1.5
   max_open_positions:   4        # Up to 4 concurrent positions — one per active strategy slot
   max_daily_loss_abs:   10.0     # Auto-halt if we lose £10 in a single day
