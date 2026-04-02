@@ -1,0 +1,10 @@
+# ── Secrets — NEVER commit these ──────────────────────────────
+.env
+
+# ── Runtime files (recreated automatically) ────────────────────
+logs/
+models/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store

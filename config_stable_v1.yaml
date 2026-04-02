@@ -1,0 +1,124 @@
+# ============================================================
+#  WEEX Trading Bot — Configuration
+# ============================================================
+
+exchange:
+  api_key:     "YOUR_API_KEY"
+  api_secret:  "YOUR_SECRET_KEY"
+  passphrase:  "YOUR_PASSPHRASE"
+  base_url:    "https://api-spot.weex.com"   # Spot API base URL (contract API auto-routes to api-contract.weex.com)
+
+# ── Set paper_trading: true while testing. Change to false for live. ──
+trading:
+  paper_trading: true
+
+  pairs:
+    - symbol:     "BTCUSDT_UMCBL"
+      name:       "BTC"
+      enabled:    true
+      allocation: 0.50       # 50 % of capital starts on BTC
+
+    - symbol:     "ETHUSDT_UMCBL"
+      name:       "ETH"
+      enabled:    true
+      allocation: 0.30
+
+    - symbol:     "SOLUSDT_UMCBL"
+      name:       "SOL"
+      enabled:    true
+      allocation: 0.20
+
+  timeframe:              "15"   # Signal candle granularity (minutes) — 15m proven at 48%+ win rate
+  lookback_candles:       300    # Candles fetched per request
+  loop_interval_s:        900    # Full tick interval — model retrain / summary (15 min)
+  entry_scan_interval_s:  300    # Entry-only scan when flat — checks every 5 min
+  monitor_interval_s:     60     # SL/TP price check — gap protection (1 min)
+  ltf_reversal_tf:        "5"    # Lower TF for reversal exit signal (5m when trading 15m)
+
+risk:
+  # Paper account = £100 equivalent in USDT
+  initial_capital:      100.0
+
+  # Risk exactly £5 per trade (absolute amount, not percentage)
+  risk_per_trade_abs:   5.0
+
+  stop_loss_atr_mult:   1.5      # Stop-loss = 1.5 × ATR
+  take_profit_atr_mult: 3.0      # Final TP = 3 × ATR  →  2 : 1 risk-reward
+  min_rr_ratio:         1.5      # Reject any trade where actual R/R falls below 1.5
+  max_open_positions:   2        # Only 2 concurrent positions (£100 account protection)
+  max_daily_loss_abs:   10.0     # Auto-halt if we lose £10 in a single day
+  max_leverage:         20       # Hard cap — leverage will never exceed this
+
+  # ── Multi-TP partial exit ──────────────────────────────────────────────────
+  # TP1: close half the position at 1:1 R/R, then move stop to breakeven.
+  # The remaining half rides until the final TP or an LTF reversal signal.
+  take_profit_1_atr_mult: 1.5    # TP1 at same distance as SL  →  1 : 1 R/R
+  take_profit_1_close_pct: 0.50  # Close 50 % of position at TP1
+
+strategy:
+  # ── Signal thresholds ──────────────────────────────────────────────────────
+  # Early-stage values — model has limited data so probabilities cluster near 0.33.
+  # Raise buy_threshold toward 0.55–0.60 once the bot has 50+ completed trades.
+  buy_threshold:    0.40   # Buy when calibrated probability > 40 %
+  sell_threshold:   0.35   # Sell when calibrated probability > 35 %
+
+  # ── Trade quality gates (BOTH must pass before entering a trade) ───────────
+  min_ev:           0.001  # Minimum Expected Value (EV > 0.1 % per trade)
+  min_win_rate:     0.45   # Need at least 45 % historical win rate before trading
+  min_ev_trades:    10     # Minimum trades before EV gate is enforced
+
+  # ── Hold / exit rules ──────────────────────────────────────────────────────
+  min_holding_candles: 2
+
+  # ── Self-improvement schedule ──────────────────────────────────────────────
+  # The bot retrains MORE FREQUENTLY early on to learn fast,
+  # then gradually slows down as its data set matures.
+  #   0–14 completed trades  →  retrain every 5
+  #  15–39 completed trades  →  retrain every 10
+  #  40–99 completed trades  →  retrain every 20
+  # 100+   completed trades  →  retrain every 40
+  retrain_stages:
+    - {after_trades:   0, retrain_every:  5}
+    - {after_trades:  15, retrain_every: 10}
+    - {after_trades:  40, retrain_every: 20}
+    - {after_trades: 100, retrain_every: 40}
+
+  # ── Labelling ──────────────────────────────────────────────────────────────
+  min_training_samples:  60    # Don't train until we have at least 60 labelled samples
+  label_horizon_candles:  4    # Look 4 candles forward to label BUY / HOLD / SELL
+  label_move_threshold: 0.015  # Fallback only — per-TF thresholds in strategy.py take priority
+                               # (5m=0.3%, 15m=0.5%, 1h=0.8%, 4h=1.5%, 1d=2.0%)
+
+logging:
+  log_file:    "logs/bot.log"
+  trades_file: "logs/trades.csv"
+  models_dir:  "models/"
+  level:       "INFO"
+
+# ── Data collection + analysis ──────────────────────────────────────────────
+data:
+  # Railway persistent volume mount path — set this up in Railway dashboard
+  # (Volumes tab → Add Volume → mount at /data)
+  data_dir:             "/data"
+
+  # Higher-timeframe used for confluence filtering.
+  # This is overridden automatically by the analysis if it finds a better one.
+  confluence_timeframe: "60"    # 1h filter applied on top of 15m signals
+
+  # Analysis results older than this many days trigger a fresh analysis run
+  analysis_stale_days:  0   # 0 = always re-run (reset to 7 after first good run)
+
+  # Signal timeframe bounds — analysis picks the best TF per symbol automatically.
+  #
+  # Why cap at 15m?
+  # Longer TFs (4h, 1h) score higher CV accuracy in analysis, but their calibrated
+  # models output probabilities of 0.13–0.16 — never enough to cross the 0.40 buy
+  # threshold. Root cause: 4h yields only ~1,460 directional training samples over
+  # 2 years vs ~23,000 for 15m. With too few samples the RandomForest can't form
+  # confident predictions — calibration maps everything toward 0.33 (prior).
+  #
+  # 15m gives proven results: 48.7% BTC / 48.3% ETH win rate in backtest.
+  # Revisit this cap after the bot has 50+ live trades and we can measure whether
+  # a wider TF range produces better live performance.
+  min_signal_tf_minutes: 5     # Allow 5m (data available, lower CV used as fallback)
+  max_signal_tf_minutes: 15    # Cap at 15m — proven win rates, ~23k training samples

@@ -1,0 +1,7 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python bot.py"
+restartPolicyType = "always"        # auto-restart if the bot crashes
+restartPolicyMaxRetries = 10
