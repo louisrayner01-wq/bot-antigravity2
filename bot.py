@@ -187,6 +187,12 @@ class TradingBot:
         self.symbol_tf:  Dict[str, str] = {}   # symbol → signal TF (minutes string)
         self.symbol_htf: Dict[str, str] = {}   # symbol → HTF (minutes string)
 
+        # Active strategies — list of dicts: {symbol, tf_label, tf_min, htf_min, slot_key}
+        # Each entry is an independent (symbol, timeframe) strategy the bot will trade.
+        # Populated from analysis profitable_strategies after analysis runs.
+        # Falls back to one entry per enabled pair using the default TF.
+        self.active_strategies: list = []
+
         mode = "🟡 PAPER FUTURES" if self.paper else "🔴 LIVE FUTURES"
         self.log.info("%s MODE  |  Account: £%.2f  |  Risk/trade: £%.2f  |  Lev: dynamic (max %dx)",
                       mode,
@@ -523,33 +529,136 @@ class TradingBot:
         if top_feats:
             self.log.info("📊 Top features from analysis: %s", top_feats)
 
+        # ── Build active_strategies from analysis profitable_strategies ────────
+        self._build_active_strategies(recs)
+
+    def _build_active_strategies(self, recs: dict):
+        """
+        Populate self.active_strategies from analysis recommendations.
+
+        Each strategy is a dict:
+          symbol    — exchange symbol e.g. "BTCUSDT_UMCBL"
+          tf_label  — human label e.g. "4h"
+          tf_min    — minutes string e.g. "240"
+          htf_min   — higher-TF minutes string e.g. "1440"
+          slot_key  — unique position key e.g. "BTCUSDT_UMCBL_4h"
+
+        Strategy list comes from analysis profitable_strategies (all (symbol, TF)
+        combos that scored >= min_strategy_accuracy in backtesting).
+        Falls back to one entry per enabled pair if analysis produced nothing.
+        """
+        HTF_UP      = {"5": "60", "15": "60", "60": "240", "240": "1440", "1440": "1440"}
+        rev_map     = {v: k for k, v in TF_LABELS.items()}
+        min_acc     = self.cfg.get("strategy", {}).get("min_strategy_accuracy", 0.52)
+        data_cfg    = self.cfg.get("data", {})
+        min_tf_cfg  = data_cfg.get("min_signal_tf_minutes")
+        max_tf_cfg  = data_cfg.get("max_signal_tf_minutes")
+
+        def _clamp(tf_min_str: str) -> str:
+            n = int(tf_min_str)
+            if min_tf_cfg and n < int(min_tf_cfg):
+                return str(int(min_tf_cfg))
+            if max_tf_cfg and n > int(max_tf_cfg):
+                return str(int(max_tf_cfg))
+            return tf_min_str
+
+        # Build a lookup: base symbol → enabled pair config
+        sym_lookup = {}
+        for p in self.pairs:
+            base = p["symbol"].replace("_UMCBL", "").replace("_SPBL", "")
+            sym_lookup[base] = p
+
+        strategies = []
+        profitable = recs.get("profitable_strategies", [])
+        for entry in profitable:
+            base    = entry["symbol"]       # e.g. "BTCUSDT"
+            tf_lbl  = entry["timeframe"]    # e.g. "4h"
+            accuracy = entry.get("cv_accuracy", 0)
+
+            if accuracy < min_acc:
+                continue
+
+            pair_cfg = sym_lookup.get(base)
+            if pair_cfg is None:
+                continue   # symbol not in our enabled pairs list
+
+            tf_min   = _clamp(rev_map.get(tf_lbl, self.tf))
+            htf_min  = HTF_UP.get(tf_min, "1440")
+            symbol   = pair_cfg["symbol"]
+            slot_key = f"{symbol}_{tf_lbl}"
+
+            strategies.append({
+                "symbol":   symbol,
+                "name":     pair_cfg["name"],
+                "tf_label": TF_LABELS.get(tf_min, tf_lbl),
+                "tf_min":   tf_min,
+                "htf_min":  htf_min,
+                "slot_key": slot_key,
+                "cv_accuracy": accuracy,
+            })
+
+        if not strategies:
+            # Fallback: one strategy per enabled pair using current default TF
+            self.log.info("📊 No profitable strategies from analysis — using default TF per pair")
+            for p in self.pairs:
+                tf_min   = _clamp(self.tf)
+                htf_min  = HTF_UP.get(tf_min, "1440")
+                tf_lbl   = TF_LABELS.get(tf_min, self.tf)
+                slot_key = f"{p['symbol']}_{tf_lbl}"
+                strategies.append({
+                    "symbol":   p["symbol"],
+                    "name":     p["name"],
+                    "tf_label": tf_lbl,
+                    "tf_min":   tf_min,
+                    "htf_min":  htf_min,
+                    "slot_key": slot_key,
+                    "cv_accuracy": 0.0,
+                })
+
+        self.active_strategies = strategies
+        self.log.info("📊 Active strategies (%d):", len(strategies))
+        for s in strategies:
+            self.log.info("     %s [%s]  cv=%.3f  slot=%s",
+                          s["name"], s["tf_label"], s.get("cv_accuracy", 0), s["slot_key"])
+
     def _initial_train(self):
         """
-        Train a separate model per pair, each on its own optimal signal timeframe.
+        Train a separate model per active strategy (symbol × timeframe).
         Uses historical CSV data where available, falls back to live candles.
         """
-        for pair_cfg in self.pairs:
-            symbol    = pair_cfg["symbol"]
-            name      = pair_cfg["name"]
-            sig_label = self._sym_tf_label(symbol)   # e.g. "15m" for ETH, "4h" for BTC
+        strategies = self.active_strategies or [
+            {
+                "symbol":   p["symbol"],
+                "name":     p["name"],
+                "tf_label": self._sym_tf_label(p["symbol"]),
+                "tf_min":   self._sym_tf(p["symbol"]),
+            }
+            for p in self.pairs
+        ]
+
+        for strat in strategies:
+            symbol    = strat["symbol"]
+            name      = strat["name"]
+            sig_label = strat["tf_label"]
+            tf_min    = strat["tf_min"]
 
             self.log.info("⏳ Training model for %s [%s]…", name, sig_label)
 
             hist = self.strategy.load_historical_candles(symbol, sig_label)
             if hist is not None and len(hist) >= self.strategy.min_samples:
                 self.strategy.train(hist, symbol=symbol, timeframe_label=sig_label)
-                self.log.info("✅ %s model trained on %d historical candles [%s].",
-                              name, len(hist), sig_label)
+                self.log.info("✅ %s [%s] trained on %d historical candles.",
+                              name, sig_label, len(hist))
             else:
-                # Fallback: fetch live candles at this symbol's signal TF
-                df = self.fetch_candles(symbol, tf=self._sym_tf(symbol))
+                df = self.fetch_candles(symbol, tf=tf_min)
                 if df is not None and len(df) >= self.strategy.min_samples:
                     self.strategy.train(df, symbol=symbol, timeframe_label=sig_label)
-                    self.log.info("✅ %s model trained on %d live candles (CSV not ready).",
-                                  name, len(df))
+                    self.log.info("✅ %s [%s] trained on %d live candles (CSV not ready).",
+                                  name, sig_label, len(df))
                 else:
                     n = len(df) if df is not None else 0
-                    self.log.info("⚠️  %s: only %d candles — will train once data builds up.", name, n)
+                    self.log.info("⚠️  %s [%s]: only %d candles — will train once data builds up.",
+                                  name, sig_label, n)
 
     def _run_mae_analysis(self):
         """
@@ -728,13 +837,19 @@ class TradingBot:
     # ── Shared entry logic ────────────────────────────────────────────────────
 
     def _try_enter(self, symbol: str, df: pd.DataFrame,
-                   price: float, atr: float, htf_direction: int) -> bool:
+                   price: float, atr: float, htf_direction: int,
+                   slot_key: str = "", timeframe_label: str = "") -> bool:
         """
         Evaluate a potential entry for `symbol` given current candle data.
-        Called from both tick() (4h) and scan_entries() (15 min).
+        slot_key   — position registry key e.g. "BTCUSDT_UMCBL_4h"
+        timeframe_label — signal TF label e.g. "4h" (selects the right model)
+        Called from both tick() and scan_entries().
         Returns True if a position was opened.
         """
-        signal, buy_p, sell_p = self.strategy.predict(df, symbol=symbol)
+        if not slot_key:
+            slot_key = symbol
+        signal, buy_p, sell_p = self.strategy.predict(df, symbol=symbol,
+                                                       timeframe_label=timeframe_label)
         signal, buy_p, sell_p = self.strategy.apply_confluence(
             signal, buy_p, sell_p, htf_direction
         )
@@ -752,8 +867,9 @@ class TradingBot:
         tp1  = self.risk.tp1_price_for(price, atr, side)
         rr_ok, actual_rr = self.risk.rr_acceptable(price, sl, tp, side)
 
-        ev, win_rate, avg_rr = self.strategy.stats.ev_and_winrate(symbol)
-        ev_ok, ev_reason     = self.strategy.trade_is_worth_it(symbol)
+        # EV stats are tracked per slot_key so each strategy has independent stats
+        ev, win_rate, avg_rr = self.strategy.stats.ev_and_winrate(slot_key)
+        ev_ok, ev_reason     = self.strategy.trade_is_worth_it(slot_key)
 
         qty, leverage = self.risk.calc_position(price, atr, win_rate)
 
@@ -762,7 +878,8 @@ class TradingBot:
 
         verdict = rr_ok and ev_ok and signal != HOLD
         print_trade_card(
-            pair=symbol, signal=signal, confidence=confidence,
+            pair=f"{symbol}[{timeframe_label}]" if timeframe_label else symbol,
+            signal=signal, confidence=confidence,
             ev=ev, win_rate=win_rate, avg_rr=avg_rr,
             actual_rr=actual_rr, qty=qty,
             risk_amount=self.risk.risk_per_trade_abs,
@@ -771,18 +888,20 @@ class TradingBot:
         )
 
         if not rr_ok:
-            self.log.info("  ⛔ %s  R/R %.2f < min %.2f — skipped", symbol, actual_rr, self.risk.min_rr)
+            self.log.info("  ⛔ %s[%s]  R/R %.2f < min %.2f — skipped",
+                          symbol, timeframe_label, actual_rr, self.risk.min_rr)
             return False
         if not ev_ok:
-            self.log.info("  ⛔ %s  EV gate — %s", symbol, ev_reason)
+            self.log.info("  ⛔ %s[%s]  EV gate — %s", symbol, timeframe_label, ev_reason)
             return False
 
-        can_open, reason = self.risk.can_open(symbol)
+        can_open, reason = self.risk.can_open(slot_key)
         if not can_open:
-            self.log.info("  ⛔ %s  %s", symbol, reason)
+            self.log.info("  ⛔ %s[%s]  %s", symbol, timeframe_label, reason)
             return False
         if qty <= 0:
-            self.log.warning("  ⚠️  %s  Position size is 0 — check ATR/equity", symbol)
+            self.log.warning("  ⚠️  %s[%s]  Position size is 0 — check ATR/equity",
+                             symbol, timeframe_label)
             return False
 
         # Capture entry candle's wick levels for MAE wick-breach detection
@@ -803,9 +922,9 @@ class TradingBot:
                     entry_candle_low=entry_candle_low,
                     entry_candle_high=entry_candle_high,
                 )
-                self.risk.open_position(pos)
-                self.log.info("🟢 LONG opened  %s  qty=%.5f @ £%.4f  SL=£%.4f  TP=£%.4f",
-                              symbol, qty, price, sl, tp)
+                self.risk.open_position(pos, slot_key=slot_key)
+                self.log.info("🟢 LONG  %s[%s]  qty=%.5f @ £%.4f  SL=£%.4f  TP=£%.4f",
+                              symbol, timeframe_label, qty, price, sl, tp)
                 return True
 
         elif signal == SELL:
@@ -822,9 +941,9 @@ class TradingBot:
                     entry_candle_low=entry_candle_low,
                     entry_candle_high=entry_candle_high,
                 )
-                self.risk.open_position(pos)
-                self.log.info("🔴 SHORT opened  %s  qty=%.5f @ £%.4f  SL=£%.4f  TP=£%.4f",
-                              symbol, qty, price, sl, tp)
+                self.risk.open_position(pos, slot_key=slot_key)
+                self.log.info("🔴 SHORT %s[%s]  qty=%.5f @ £%.4f  SL=£%.4f  TP=£%.4f",
+                              symbol, timeframe_label, qty, price, sl, tp)
                 return True
 
         return False
@@ -843,11 +962,14 @@ class TradingBot:
         if not self.risk.open_positions:
             return
 
-        for pair_cfg in self.pairs:
-            symbol = pair_cfg["symbol"]
-            pos    = self.risk.open_positions.get(symbol)
-            if not pos:
-                continue
+        # Iterate over a snapshot of slot_key → Position entries
+        # (slot_key is "SYMBOL_TF" e.g. "BTCUSDT_UMCBL_4h")
+        for slot_key, pos in list(self.risk.open_positions.items()):
+            symbol = pos.pair
+
+            # Derive the TF label from slot_key for record_outcome calls
+            # slot_key format: "SYMBOL_TFlabel"  e.g. "BTCUSDT_UMCBL_4h"
+            tf_label = slot_key.replace(symbol + "_", "") if "_" in slot_key else self._sym_tf_label(symbol)
 
             # Quick candle fetch for current price
             df = self.fetch_candles(symbol, limit=10)
@@ -856,32 +978,32 @@ class TradingBot:
             price = self.live_price(symbol, df)
 
             # Update MAE / MFE before checking exits (records worst/best price seen)
-            self.risk.update_excursion(symbol, price)
+            self.risk.update_excursion(slot_key, price)
 
-            exit_reason = self.risk.should_exit(symbol, price)
+            exit_reason = self.risk.should_exit(slot_key, price)
 
             # ── TP1: partial close — position stays open ───────────────────
             if exit_reason == "tp1":
                 partial_qty = round(pos.quantity_original * self.risk.tp1_close_pct, 6)
                 self._close_pos(symbol, partial_qty, price, pos.side)
-                trade = self.risk.partial_close(symbol, price)
+                trade = self.risk.partial_close(slot_key, price)
                 if trade:
                     self.logger.log_trade(trade, self.risk.equity, "tp1_partial")
-                # Don't continue — position still open, check LTF next cycle
                 continue
 
             # ── SL or final TP: full close ─────────────────────────────────
             if exit_reason in ("stop_loss", "take_profit"):
-                self.log.info("🚨 %s  %s  @ £%.4f", exit_reason.upper(), symbol, price)
+                self.log.info("🚨 %s  %s[%s]  @ £%.4f", exit_reason.upper(), symbol, tf_label, price)
                 self._close_pos(symbol, pos.quantity, price, pos.side)
-                trade = self.risk.close_position(symbol, price)
+                trade = self.risk.close_position(slot_key, price)
                 if trade:
+                    trade["slot_key"] = slot_key
                     self.logger.log_trade(trade, self.risk.equity, exit_reason)
                     full_df = self.fetch_candles(symbol)
                     if full_df is not None:
                         self.strategy.record_outcome(
                             trade, full_df, symbol=symbol,
-                            timeframe_label=self._sym_tf_label(symbol),
+                            timeframe_label=tf_label,
                         )
                 continue
 
@@ -889,17 +1011,18 @@ class TradingBot:
             if pos.tp1_hit:
                 ltf_df = self.fetch_candles(symbol, tf=self.ltf_tf, limit=50)
                 if self._ltf_reversal(ltf_df, pos.side):
-                    self.log.info("📉 LTF reversal exit  %s  @ £%.4f  (1h %s signal)",
-                                  symbol, price, self.ltf_label)
+                    self.log.info("📉 LTF reversal exit  %s[%s]  @ £%.4f",
+                                  symbol, tf_label, price)
                     self._close_pos(symbol, pos.quantity, price, pos.side)
-                    trade = self.risk.close_position(symbol, price)
+                    trade = self.risk.close_position(slot_key, price)
                     if trade:
+                        trade["slot_key"] = slot_key
                         self.logger.log_trade(trade, self.risk.equity, "ltf_reversal")
                         full_df = self.fetch_candles(symbol)
                         if full_df is not None:
                             self.strategy.record_outcome(
                                 trade, full_df, symbol=symbol,
-                                timeframe_label=self._sym_tf_label(symbol),
+                                timeframe_label=tf_label,
                             )
 
     # ── Background data accumulation ─────────────────────────────────────────
@@ -945,54 +1068,64 @@ class TradingBot:
 
     def scan_entries(self):
         """
-        Lightweight entry scan that runs every entry_scan_interval_s (15 min).
-
-        Evaluates every pair independently — BTC and ETH can both have open
-        positions at the same time, matching the backtest behaviour.  Each
-        pair is skipped individually if it already has an open position;
-        the scan is never halted globally just because one pair is active.
-        The risk manager's max_open_positions cap (2) is the hard limit.
+        Lightweight entry scan — runs every entry_scan_interval_s (15 min).
+        Iterates over ALL active strategies (not just pairs), so BTC-4h and
+        BTC-15m are evaluated independently.  Each strategy slot is skipped
+        only if that specific slot already has an open position.
         """
         if self.risk.trading_halted():
             return
 
-        results = []   # collect per-pair results into one summary log line
+        strategies = self.active_strategies or [
+            {
+                "symbol":   p["symbol"],
+                "name":     p["name"],
+                "tf_label": self._sym_tf_label(p["symbol"]),
+                "tf_min":   self._sym_tf(p["symbol"]),
+                "htf_min":  self._sym_htf(p["symbol"]),
+                "slot_key": p["symbol"],
+            }
+            for p in self.pairs
+        ]
 
-        for pair_cfg in self.pairs:
-            symbol = pair_cfg["symbol"]
-            name   = pair_cfg["name"]
-            if symbol in self.risk.open_positions:
+        results = []
+
+        for strat in strategies:
+            symbol    = strat["symbol"]
+            name      = strat["name"]
+            tf_label  = strat["tf_label"]
+            tf_min    = strat["tf_min"]
+            htf_min   = strat["htf_min"]
+            slot_key  = strat["slot_key"]
+
+            if slot_key in self.risk.open_positions:
+                results.append(f"{name}[{tf_label}]→OPEN")
                 continue
 
-            sym_tf  = self._sym_tf(symbol)
-            sym_htf = self._sym_htf(symbol)
-
-            df = self.fetch_candles(symbol, tf=sym_tf)
+            df = self.fetch_candles(symbol, tf=tf_min)
             if df is None or len(df) < 60:
-                results.append(f"{name}→NO_DATA")
+                results.append(f"{name}[{tf_label}]→NO_DATA")
                 continue
 
             price = self.live_price(symbol, df)
             atr   = float(df["atr_14"].iloc[-1]) if "atr_14" in df.columns else price * 0.01
 
-            htf_df = None
-            if sym_htf != sym_tf:
-                htf_df = self.fetch_candles(symbol, tf=sym_htf, limit=100)
+            htf_df = self.fetch_candles(symbol, tf=htf_min, limit=100) if htf_min != tf_min else None
             htf_direction = self.strategy.htf_trend(htf_df) if htf_df is not None else 0
 
-            # Peek at probabilities for the summary line
-            signal, buy_p, sell_p = self.strategy.predict(df, symbol=symbol)
+            signal, buy_p, sell_p = self.strategy.predict(df, symbol=symbol,
+                                                           timeframe_label=tf_label)
             signal, buy_p, sell_p = self.strategy.apply_confluence(
                 signal, buy_p, sell_p, htf_direction
             )
 
-            if signal == 0:   # HOLD
-                results.append(f"{name}→HOLD(b{buy_p:.2f}/s{sell_p:.2f})")
+            if signal == 0:
+                results.append(f"{name}[{tf_label}]→HOLD(b{buy_p:.2f}/s{sell_p:.2f})")
                 continue
 
-            # Non-HOLD signal — run full gate checks via _try_enter
-            entered = self._try_enter(symbol, df, price, atr, htf_direction)
-            results.append(f"{name}→{'ENTERED' if entered else 'BLOCKED'}")
+            entered = self._try_enter(symbol, df, price, atr, htf_direction,
+                                      slot_key=slot_key, timeframe_label=tf_label)
+            results.append(f"{name}[{tf_label}]→{'ENTERED' if entered else 'BLOCKED'}")
 
         self.log.info("🔍 Scan @ %s  |  %s",
                       utcnow().strftime("%H:%M UTC"), "  ".join(results))
@@ -1008,39 +1141,47 @@ class TradingBot:
         if self.risk.trading_halted():
             return
 
-        for pair_cfg in self.pairs:
-            symbol = pair_cfg["symbol"]
+        strategies = self.active_strategies or [
+            {
+                "symbol":   p["symbol"],
+                "name":     p["name"],
+                "tf_label": self._sym_tf_label(p["symbol"]),
+                "tf_min":   self._sym_tf(p["symbol"]),
+                "htf_min":  self._sym_htf(p["symbol"]),
+                "slot_key": p["symbol"],
+            }
+            for p in self.pairs
+        ]
 
-            # ── 1. Fetch signal-TF candles (per-symbol optimal TF) ───────────
-            sym_tf = self._sym_tf(symbol)
-            df = self.fetch_candles(symbol, tf=sym_tf)
+        for strat in strategies:
+            symbol   = strat["symbol"]
+            tf_min   = strat["tf_min"]
+            tf_label = strat["tf_label"]
+            htf_min  = strat["htf_min"]
+            slot_key = strat["slot_key"]
+
+            df = self.fetch_candles(symbol, tf=tf_min)
             if df is None or len(df) < 60:
                 continue
 
             price = self.live_price(symbol, df)
             atr   = float(df["atr_14"].iloc[-1]) if "atr_14" in df.columns else price * 0.01
 
-            # ── 2. Fetch higher-TF candles for confluence ─────────────────────
-            sym_htf = self._sym_htf(symbol)
-            htf_df = None
-            if sym_htf != sym_tf:
-                htf_df = self.fetch_candles(symbol, tf=sym_htf, limit=100)
+            htf_df = self.fetch_candles(symbol, tf=htf_min, limit=100) if htf_min != tf_min else None
             htf_direction = self.strategy.htf_trend(htf_df) if htf_df is not None else 0
 
-            # ── 3. Skip entry evaluation if already in this position ─────────
-            # (monitor_exits handles all exit logic on its 5-min cycle)
-            if symbol in self.risk.open_positions:
+            if slot_key in self.risk.open_positions:
                 continue
 
-            # ── 4–9. Evaluate entry signal and open position if warranted ─────
-            self._try_enter(symbol, df, price, atr, htf_direction)
+            self._try_enter(symbol, df, price, atr, htf_direction,
+                            slot_key=slot_key, timeframe_label=tf_label)
 
         # Performance summary every 5 ticks
         if self._tick_count % 5 == 0:
             self.logger.print_summary()
             top_pairs = self.strategy.best_pairs()
             if top_pairs:
-                self.log.info("📊 Pair ranking by EV: %s",
+                self.log.info("📊 Strategy ranking by EV: %s",
                               {k: f"{v*100:+.3f}%" for k, v in top_pairs.items()})
 
         # MAE/MFE stop-loss optimisation — re-run every 10 ticks (~40h)

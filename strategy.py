@@ -201,7 +201,8 @@ class TradingStrategy:
         self.scaler = StandardScaler()
         self.selected_features: List[str] = list(FEATURE_COLS)
 
-        # Per-symbol models — each pair can train on its own optimal timeframe
+        # Per-strategy models — keyed by "{SYMBOL}_{TF}" e.g. "BTCUSDT_4h"
+        # Allows multiple (symbol, timeframe) strategies to run simultaneously.
         self.symbol_models:   Dict[str, CalibratedClassifierCV] = {}
         self.symbol_scalers:  Dict[str, StandardScaler]         = {}
         self.symbol_features: Dict[str, List[str]]              = {}
@@ -221,9 +222,14 @@ class TradingStrategy:
     # ── Persistence ───────────────────────────────────────────────────────────
 
     @staticmethod
-    def _sym_key(symbol: str) -> str:
-        """Strip exchange suffix so 'ETHUSDT_SPBL' → 'ETHUSDT'."""
-        return symbol.replace("_SPBL", "").replace("_UMCBL", "")
+    def _sym_key(symbol: str, timeframe_label: str = "") -> str:
+        """
+        Build a model key from symbol + optional timeframe.
+        'ETHUSDT_UMCBL', '15m' → 'ETHUSDT_15m'
+        'ETHUSDT_UMCBL', ''    → 'ETHUSDT'   (backward-compat)
+        """
+        base = symbol.replace("_SPBL", "").replace("_UMCBL", "")
+        return f"{base}_{timeframe_label}" if timeframe_label else base
 
     def _model_path(self, sym_key: str = "") -> str:
         if sym_key:
@@ -249,12 +255,14 @@ class TradingStrategy:
                 logger.warning("Could not load model (%s) — will train fresh.", exc)
 
     def _try_load_symbol_models(self):
-        """Load any previously saved per-symbol models from disk."""
+        """Load any previously saved per-strategy models from disk."""
         try:
             for fname in os.listdir(self.models_dir):
                 if not (fname.startswith("model_") and fname.endswith(".joblib")):
                     continue
                 sym_key   = fname[len("model_"):-len(".joblib")]
+                if not sym_key:
+                    continue
                 meta_path = self._meta_path(sym_key)
                 if not os.path.exists(meta_path):
                     continue
@@ -264,7 +272,7 @@ class TradingStrategy:
                     self.symbol_models[sym_key]   = model
                     self.symbol_scalers[sym_key]  = meta["scaler"]
                     self.symbol_features[sym_key] = meta["features"]
-                    logger.info("✅ Loaded per-symbol model: %s", sym_key)
+                    logger.info("✅ Loaded strategy model: %s", sym_key)
                 except Exception as exc:
                     logger.warning("Could not load model %s: %s", sym_key, exc)
         except Exception:
@@ -525,9 +533,9 @@ class TradingStrategy:
         logger.info("Top features: %s",
                     {f: round(importances[f], 3) for f in top5})
 
-        # ── Store model (per-symbol when symbol given; always update default) ──
+        # ── Store model keyed by "SYMBOL_TF" (e.g. "BTCUSDT_4h") ─────────────
         if symbol:
-            sym_key = self._sym_key(symbol)
+            sym_key = self._sym_key(symbol, timeframe_label)
             self.symbol_models[sym_key]   = self.model
             self.symbol_scalers[sym_key]  = self.scaler
             self.symbol_features[sym_key] = self.selected_features
@@ -539,18 +547,25 @@ class TradingStrategy:
 
     # ── Prediction ────────────────────────────────────────────────────────────
 
-    def predict(self, df: pd.DataFrame, symbol: str = "") -> Tuple[int, float, float]:
+    def predict(self, df: pd.DataFrame, symbol: str = "",
+                timeframe_label: str = "") -> Tuple[int, float, float]:
         """
         Returns (signal, buy_probability, sell_probability).
         signal: BUY (1), HOLD (0), SELL (-1)
         Probabilities are calibrated — 0.65 really does mean ~65% likely.
 
-        If a per-symbol model has been trained (via train(..., symbol=...)),
-        that model is used. Otherwise falls back to the default model.
+        Looks up the model keyed by "SYMBOL_TF" when timeframe_label is given,
+        then falls back to plain "SYMBOL", then to the default model.
         """
         # Resolve which model/scaler/features to use
-        sym_key = self._sym_key(symbol) if symbol else ""
-        if sym_key and sym_key in self.symbol_models:
+        sym_key_tf = self._sym_key(symbol, timeframe_label) if symbol and timeframe_label else ""
+        sym_key    = self._sym_key(symbol) if symbol else ""
+
+        if sym_key_tf and sym_key_tf in self.symbol_models:
+            model   = self.symbol_models[sym_key_tf]
+            scaler  = self.symbol_scalers[sym_key_tf]
+            feats   = self.symbol_features[sym_key_tf]
+        elif sym_key and sym_key in self.symbol_models:
             model   = self.symbol_models[sym_key]
             scaler  = self.symbol_scalers[sym_key]
             feats   = self.symbol_features[sym_key]
@@ -624,17 +639,22 @@ class TradingStrategy:
     def record_outcome(self, outcome: dict, df: pd.DataFrame,
                        symbol: str = "", timeframe_label: str = "15m"):
         """Call whenever a trade closes. Triggers retraining when due."""
-        self.stats.record(outcome)
+        # Prefer slot_key (e.g. "BTCUSDT_UMCBL_4h") for per-strategy EV tracking;
+        # fall back to pair so existing trade dicts without slot_key still work.
+        stat_key = outcome.get("slot_key") or outcome.get("pair")
+        outcome_for_stats = dict(outcome)
+        outcome_for_stats["pair"] = stat_key   # TradeStats.for_pair() keys on "pair"
+        self.stats.record(outcome_for_stats)
         self.total_trades        += 1
         self.trades_since_retrain += 1
 
-        ev, wr, rr = self.stats.ev_and_winrate(outcome.get("pair"))
+        ev, wr, rr = self.stats.ev_and_winrate(stat_key)
         pnl = outcome.get("pnl_pct", 0)
         logger.info("📝 Trade #%d  %s  PnL=%+.2f%%  │  Overall: %s",
                     self.total_trades,
-                    outcome.get("pair", "?"),
+                    stat_key,
                     pnl * 100,
-                    self.stats.summary_str(outcome.get("pair")))
+                    self.stats.summary_str(stat_key))
 
         freq = retrain_frequency(self.total_trades, self.retrain_stages)
         if self.trades_since_retrain >= freq:

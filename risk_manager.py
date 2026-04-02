@@ -236,11 +236,15 @@ class RiskManager:
 
     # ── Gate checks ───────────────────────────────────────────────────────────
 
-    def can_open(self, pair: str) -> Tuple[bool, str]:
+    def can_open(self, slot_key: str) -> Tuple[bool, str]:
+        """
+        slot_key is "SYMBOL_TF" (e.g. "BTCUSDT_UMCBL_4h") so two different
+        timeframe strategies on the same symbol each get their own slot.
+        """
         if self.trading_halted():
             return False, "daily loss limit reached"
-        if pair in self.open_positions:
-            return False, "already have an open position on this pair"
+        if slot_key in self.open_positions:
+            return False, f"already have an open position for {slot_key}"
         if len(self.open_positions) >= self.max_open:
             return False, f"max open positions ({self.max_open}) reached"
         if self.equity < self.risk_per_trade_abs:
@@ -294,8 +298,9 @@ class RiskManager:
 
     # ── Position registry ─────────────────────────────────────────────────────
 
-    def open_position(self, pos: Position):
-        self.open_positions[pos.pair] = pos
+    def open_position(self, pos: Position, slot_key: str = ""):
+        key = slot_key if slot_key else pos.pair
+        self.open_positions[key] = pos
         logger.info(
             "📈 OPEN  %s %s @ £%.4f | SL=£%.4f | TP=£%.4f | R/R=%.2f | Qty=%.5f | Lev=%dx",
             pos.side.upper(), pos.pair, pos.entry_price,

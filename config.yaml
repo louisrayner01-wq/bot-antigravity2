@@ -44,7 +44,7 @@ risk:
   stop_loss_atr_mult:   1.5      # Stop-loss = 1.5 × ATR
   take_profit_atr_mult: 3.0      # Final TP = 3 × ATR  →  2 : 1 risk-reward
   min_rr_ratio:         1.5      # Reject any trade where actual R/R falls below 1.5
-  max_open_positions:   2        # Only 2 concurrent positions (£100 account protection)
+  max_open_positions:   4        # Up to 4 concurrent positions — one per active strategy slot
   max_daily_loss_abs:   10.0     # Auto-halt if we lose £10 in a single day
   max_leverage:         20       # Hard cap — leverage will never exceed this
 
@@ -65,6 +65,7 @@ strategy:
   min_ev:           0.001  # Minimum Expected Value (EV > 0.1 % per trade)
   min_win_rate:     0.45   # Need at least 45 % historical win rate before trading
   min_ev_trades:    10     # Minimum trades before EV gate is enforced
+  min_strategy_accuracy: 0.52  # Min CV accuracy for a (symbol, TF) strategy to be traded
 
   # ── Hold / exit rules ──────────────────────────────────────────────────────
   min_holding_candles: 2

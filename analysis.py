@@ -501,6 +501,28 @@ class Analyzer:
             if signal_part == best_signal_tf:
                 best_filter_tf = filter_part
 
+        # All profitable (symbol, TF) strategies — above-chance threshold for binary
+        # BUY/SELL classification.  The bot will train a separate model for each and
+        # trade ALL of them simultaneously (one exchange position per symbol at a time).
+        min_acc = 0.52
+        profitable_strategies = sorted(
+            [
+                {
+                    "symbol":      r["symbol"],
+                    "timeframe":   r["timeframe"],
+                    "cv_accuracy": round(r["cv_accuracy"], 4),
+                }
+                for r in tf_results
+                if r["cv_accuracy"] >= min_acc
+            ],
+            key=lambda x: x["cv_accuracy"],
+            reverse=True,
+        )
+        logger.info("Profitable strategies (cv ≥ %.2f): %d found — %s",
+                    min_acc, len(profitable_strategies),
+                    [(s["symbol"], s["timeframe"], s["cv_accuracy"])
+                     for s in profitable_strategies])
+
         return {
             "best_signal_timeframe":  best_signal_tf,
             "best_filter_timeframe":  best_filter_tf,
@@ -515,6 +537,8 @@ class Analyzer:
                                        sorted(tf_avg.items(), key=lambda x: x[1], reverse=True)},
             "per_symbol_best_tf":     per_symbol,
             "label_thresholds":       label_thresholds,
+            "profitable_strategies":  profitable_strategies,
+            "min_strategy_accuracy":  min_acc,
         }
 
     # ── Report ────────────────────────────────────────────────────────────────
