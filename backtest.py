@@ -45,6 +45,7 @@ import argparse
 import numpy as np
 import pandas as pd
 import yaml
+import joblib
 from typing import Dict, List, Optional, Tuple
 
 from sklearn.ensemble import (RandomForestClassifier,
@@ -301,10 +302,15 @@ def _summarise(trades: List[Dict],
 
 def _train(df_raw: pd.DataFrame,
            symbol: str,
-           tf_label: str) -> Optional[Tuple]:
+           tf_label: str,
+           models_dir: Optional[str] = None) -> Optional[Tuple]:
     """
     Compute features, label, split 70/30, train model on train split.
     Returns (scaler, model, classes, train_df, test_df, threshold) or None.
+
+    If models_dir is provided, saves the trained model + scaler in the exact
+    format strategy.py expects — so the live bot loads and continues from this
+    model directly without retraining.
     """
     df = compute_features(df_raw.copy())
     threshold = compute_adaptive_threshold(df)
@@ -340,6 +346,19 @@ def _train(df_raw: pd.DataFrame,
     model = build_model()
     model.fit(X_train_s, y_train)
 
+    # Save model in strategy.py format so the live bot loads it directly.
+    # Key format: "BTCUSDT_15m" — same as TradingStrategy._sym_key()
+    if models_dir:
+        os.makedirs(models_dir, exist_ok=True)
+        base    = symbol.replace("_UMCBL", "").replace("_SPBL", "")
+        sym_key = f"{base}_{tf_label}"
+        model_path = os.path.join(models_dir, f"model_{sym_key}.joblib")
+        meta_path  = os.path.join(models_dir, f"meta_{sym_key}.joblib")
+        joblib.dump(model, model_path)
+        joblib.dump({"scaler": scaler, "features": feats,
+                     "total_trades": 0, "trade_history": []}, meta_path)
+        log.info("💾 Saved backtest model → %s", model_path)
+
     return scaler, model, list(model.classes_), feats, train, test, threshold
 
 
@@ -350,9 +369,10 @@ def backtest_single(df_raw: pd.DataFrame,
                     tf_label: str,
                     sl_mult: float,
                     tp_mult: float,
-                    min_confidence: float = 0.55) -> Optional[Dict]:
+                    min_confidence: float = 0.55,
+                    models_dir: Optional[str] = None) -> Optional[Dict]:
     """Single-timeframe walk-forward backtest."""
-    result = _train(df_raw, symbol, tf_label)
+    result = _train(df_raw, symbol, tf_label, models_dir=models_dir)
     if result is None:
         return None
     scaler, model, classes, feats, train, test, threshold = result
@@ -371,12 +391,13 @@ def backtest_confluence(df_entry: pd.DataFrame,
                         filter_tf: str,
                         sl_mult: float,
                         tp_mult: float,
-                        min_confidence: float = 0.55) -> Optional[Dict]:
+                        min_confidence: float = 0.55,
+                        models_dir: Optional[str] = None) -> Optional[Dict]:
     """
     Confluence backtest: model trained on entry_tf, entries gated by
     filter_tf EMA21 trend agreement.
     """
-    result = _train(df_entry, symbol, entry_tf)
+    result = _train(df_entry, symbol, entry_tf, models_dir=models_dir)
     if result is None:
         return None
     scaler, model, classes, feats, train, test, threshold = result
@@ -398,12 +419,13 @@ def backtest_mtf(df_entry: pd.DataFrame,
                  direction_tf: str,
                  sl_mult: float,
                  tp_mult: float,
-                 min_confidence: float = 0.55) -> Optional[Dict]:
+                 min_confidence: float = 0.55,
+                 models_dir: Optional[str] = None) -> Optional[Dict]:
     """
     MTF backtest: model trained on entry_tf, entries gated by direction_tf
     EMA21 trend (same gate as confluence — direction_tf provides trend bias).
     """
-    result = _train(df_entry, symbol, entry_tf)
+    result = _train(df_entry, symbol, entry_tf, models_dir=models_dir)
     if result is None:
         return None
     scaler, model, classes, feats, train, test, threshold = result
@@ -507,7 +529,8 @@ def run_all(data_dir: str,
             sl_mult: float,
             tp_mult: float,
             min_confidence: float = 0.55,
-            min_confluence_gain: float = 0.05) -> List[Dict]:
+            min_confluence_gain: float = 0.05,
+            models_dir: Optional[str] = None) -> List[Dict]:
     """
     Load analysis_results.json, backtest every profitable strategy it found.
     Falls back to all symbol × TF combos if the file is missing.
@@ -546,7 +569,7 @@ def run_all(data_dir: str,
         if df is None:
             continue
         log.info("  %s %s  (%d candles)", symbol, tf_lbl, len(df))
-        res = backtest_single(df, symbol, tf_lbl, sl_mult, tp_mult, min_confidence)
+        res = backtest_single(df, symbol, tf_lbl, sl_mult, tp_mult, min_confidence, models_dir=models_dir)
         if res:
             all_results.append(res)
 
@@ -573,7 +596,8 @@ def run_all(data_dir: str,
                  c.get("accuracy_gain", 0), c.get("coverage", 0) * 100)
         res = backtest_confluence(df_entry, df_filter, symbol,
                                   entry_tf, filter_tf,
-                                  sl_mult, tp_mult, min_confidence)
+                                  sl_mult, tp_mult, min_confidence,
+                                  models_dir=models_dir)
         if res:
             all_results.append(res)
 
@@ -600,7 +624,8 @@ def run_all(data_dir: str,
                  s.get("cv_accuracy", 0), s.get("accuracy_gain", 0))
         res = backtest_mtf(df_entry, df_direction, symbol,
                            entry_tf, direction_tf,
-                           sl_mult, tp_mult, min_confidence)
+                           sl_mult, tp_mult, min_confidence,
+                           models_dir=models_dir)
         if res:
             all_results.append(res)
 

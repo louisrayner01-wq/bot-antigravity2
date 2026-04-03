@@ -44,7 +44,7 @@ risk:
   stop_loss_atr_mult:   2.2      # MAE-calibrated from 2221 simulated trades (was 1.5 — too tight)
   take_profit_atr_mult: 3.5      # MAE-calibrated from 2221 simulated trades (was 3.0)
   min_rr_ratio:         1.5      # Reject any trade where actual R/R falls below 1.5
-  max_open_positions:   4        # Up to 4 concurrent positions — one per active strategy slot
+  max_open_positions:   3        # One per symbol (BTC/ETH/SOL) — enforced by per-symbol check in risk_manager
   max_daily_loss_abs:   10.0     # Auto-halt if we lose £10 in a single day
   max_leverage:         20       # Hard cap — leverage will never exceed this
 
@@ -58,8 +58,8 @@ strategy:
   # ── Signal thresholds ──────────────────────────────────────────────────────
   # Early-stage values — model has limited data so probabilities cluster near 0.33.
   # Raise buy_threshold toward 0.55–0.60 once the bot has 50+ completed trades.
-  buy_threshold:    0.45   # Matches the historical backtest threshold — keep in sync with historical_mae.py
-  sell_threshold:   0.35   # Matches the historical backtest threshold — keep in sync with historical_mae.py
+  buy_threshold:    0.55   # Matches the backtest min_confidence threshold exactly
+  sell_threshold:   0.55   # Matches the backtest min_confidence threshold exactly
 
   # ── Trade quality gates (BOTH must pass before entering a trade) ───────────
   min_ev:           0.001  # Minimum Expected Value (EV > 0.1 % per trade)
@@ -92,7 +92,7 @@ strategy:
 logging:
   log_file:    "logs/bot.log"
   trades_file: "logs/trades.csv"
-  models_dir:  "models/"
+  models_dir:  "/data/models/"
   level:       "INFO"
 
 # ── Data collection + analysis ──────────────────────────────────────────────
@@ -106,7 +106,7 @@ data:
   confluence_timeframe: "60"    # 1h filter applied on top of 15m signals
 
   # Analysis results older than this many days trigger a fresh analysis run
-  analysis_stale_days:  0   # 0 = force re-run on next startup (reset to 7 after)
+  analysis_stale_days:  9999  # locked — re-run manually via FORCE_MAE_RERUN=true or FORCE_RETRAIN=true
 
   # Signal timeframe bounds — analysis picks the best TF per symbol automatically.
   #

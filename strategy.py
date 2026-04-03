@@ -32,7 +32,10 @@ import pandas as pd
 import joblib
 from typing import Tuple, Optional, List, Dict
 
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import (RandomForestClassifier,
+                               GradientBoostingClassifier,
+                               ExtraTreesClassifier,
+                               VotingClassifier)
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.model_selection import cross_val_score
 from sklearn.preprocessing import StandardScaler
@@ -156,22 +159,27 @@ def retrain_frequency(total_trades: int, stages: List[Dict]) -> int:
 
 def build_model() -> CalibratedClassifierCV:
     """
-    Single Random Forest wrapped in sigmoid calibration.
-    Kept lean (100 trees, depth 8) to run reliably within Railway's 512 MB RAM.
-    Calibration ensures predicted probabilities are accurate —
-    "65% confident" genuinely means ~65% likely.
+    Identical ensemble to the walk-forward backtest (backtest.py):
+    RF + GradientBoosting + ExtraTrees, soft-vote, wrapped in calibration.
+    This ensures live model confidence scores are directly comparable to
+    the 0.55 threshold proven in backtesting.
     """
     rf = RandomForestClassifier(
-        n_estimators=100,      # lean but reliable on ~300 samples
-        max_depth=8,
-        min_samples_leaf=5,
-        max_features="sqrt",
-        class_weight="balanced",
-        random_state=42,
-        n_jobs=1,              # single thread — more stable on small servers
+        n_estimators=100, max_depth=8,
+        min_samples_leaf=10, random_state=42, n_jobs=1,
     )
-    # sigmoid calibration: fast, low memory, works well with RF
-    return CalibratedClassifierCV(rf, method="sigmoid", cv=3)
+    gb = GradientBoostingClassifier(
+        n_estimators=80, max_depth=4,
+        learning_rate=0.05, random_state=42,
+    )
+    et = ExtraTreesClassifier(
+        n_estimators=100, max_depth=8,
+        min_samples_leaf=10, random_state=42, n_jobs=1,
+    )
+    voter = VotingClassifier(
+        estimators=[("rf", rf), ("gb", gb), ("et", et)], voting="soft"
+    )
+    return CalibratedClassifierCV(voter, cv=3)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -236,15 +236,39 @@ class RiskManager:
 
     # ── Gate checks ───────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _base_symbol(slot_key: str) -> str:
+        """
+        Extract the base symbol from a slot_key.
+        "BTCUSDT_UMCBL_4h" → "BTCUSDT_UMCBL"
+        "BTCUSDT_UMCBL_1h→15m" → "BTCUSDT_UMCBL"
+        """
+        # slot_key format: SYMBOL_SUFFIX_TFLABEL  e.g. BTCUSDT_UMCBL_4h
+        # Split on "_" and drop the last token (the TF label)
+        parts = slot_key.rsplit("_", 1)
+        return parts[0] if len(parts) == 2 else slot_key
+
+    def symbol_has_open_position(self, slot_key: str) -> bool:
+        """Returns True if any open position shares the same base symbol."""
+        base = self._base_symbol(slot_key)
+        return any(self._base_symbol(k) == base for k in self.open_positions)
+
     def can_open(self, slot_key: str) -> Tuple[bool, str]:
         """
         slot_key is "SYMBOL_TF" (e.g. "BTCUSDT_UMCBL_4h") so two different
         timeframe strategies on the same symbol each get their own slot.
+
+        Per-symbol limit: only one position per base symbol at a time.
+        BTC/ETH/SOL are highly correlated — stacking multiple TF strategies
+        on the same symbol multiplies drawdown without diversifying risk.
         """
         if self.trading_halted():
             return False, "daily loss limit reached"
         if slot_key in self.open_positions:
             return False, f"already have an open position for {slot_key}"
+        if self.symbol_has_open_position(slot_key):
+            base = self._base_symbol(slot_key)
+            return False, f"symbol already has an open position ({base})"
         if len(self.open_positions) >= self.max_open:
             return False, f"max open positions ({self.max_open}) reached"
         if self.equity < self.risk_per_trade_abs:

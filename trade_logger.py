@@ -7,7 +7,7 @@ import os
 import csv
 import logging
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -25,10 +25,31 @@ class TradeLogger:
         "wick_breach",  # 1 if price violated the entry candle's wick before close
     ]
 
+    # Fields recorded when a valid signal is skipped due to position already open.
+    # sl_price / tp_price allow the hypothetical outcome to be calculated later
+    # by comparing against subsequent candle data.
+    SKIPPED_FIELDS = [
+        "timestamp",      # when the signal fired
+        "slot_key",       # e.g. "BTCUSDT_UMCBL_4h"
+        "symbol",         # e.g. "BTCUSDT_UMCBL"
+        "timeframe",      # e.g. "4h"
+        "signal",         # "BUY" or "SELL"
+        "confidence",     # model probability 0–1
+        "entry_price",    # price at signal time
+        "sl_price",       # where stop-loss would have been
+        "tp_price",       # where take-profit would have been
+        "rr",             # actual R/R ratio
+        "ev_pct",         # expected value % at time of skip (None if not enough data)
+        "skip_reason",    # e.g. "symbol already has an open position (BTCUSDT_UMCBL)"
+        "blocking_slot",  # which open position caused the skip
+    ]
+
     def __init__(self, trades_file: str):
-        self.trades_file = trades_file
+        self.trades_file   = trades_file
+        self.skipped_file  = trades_file.replace(".csv", "_skipped.csv")
         os.makedirs(os.path.dirname(trades_file) or ".", exist_ok=True)
         self._write_header()
+        self._write_skipped_header()
         self.records: List[dict] = []
 
     def _write_header(self):
@@ -36,6 +57,44 @@ class TradeLogger:
             with open(self.trades_file, "w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=self.FIELDS)
                 writer.writeheader()
+
+    def _write_skipped_header(self):
+        if not os.path.exists(self.skipped_file):
+            with open(self.skipped_file, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=self.SKIPPED_FIELDS)
+                writer.writeheader()
+
+    def log_skipped(self, slot_key: str, symbol: str, timeframe: str,
+                    signal: str, confidence: float,
+                    entry_price: float, sl_price: float, tp_price: float,
+                    rr: float, ev_pct: Optional[float],
+                    skip_reason: str, blocking_slot: str = ""):
+        """
+        Record a signal that was valid (passed EV + R/R gates) but skipped
+        because a position was already open on this symbol.
+        The sl_price and tp_price fields allow the hypothetical outcome to be
+        reconstructed later by replaying subsequent candle data.
+        """
+        row = {
+            "timestamp":    datetime.utcnow().isoformat(),
+            "slot_key":     slot_key,
+            "symbol":       symbol,
+            "timeframe":    timeframe,
+            "signal":       signal,
+            "confidence":   round(confidence, 4),
+            "entry_price":  round(entry_price, 4),
+            "sl_price":     round(sl_price, 4),
+            "tp_price":     round(tp_price, 4),
+            "rr":           round(rr, 3),
+            "ev_pct":       round(ev_pct, 4) if ev_pct is not None else "",
+            "skip_reason":  skip_reason,
+            "blocking_slot": blocking_slot,
+        }
+        with open(self.skipped_file, "a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=self.SKIPPED_FIELDS)
+            writer.writerow(row)
+        logger.info("⏭️  SKIPPED  %s[%s]  %s  conf=%.2f  reason=%s",
+                    symbol, timeframe, signal, confidence, skip_reason)
 
     def log_trade(self, trade: dict, equity_after: float, exit_reason: str = "signal"):
         row = {

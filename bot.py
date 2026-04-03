@@ -886,7 +886,6 @@ class TradingBot:
         side = "long" if signal == BUY else "short"
         sl   = self.risk.stop_loss_price(price, atr, side)
         tp   = self.risk.take_profit_price(price, atr, side)
-        tp1  = self.risk.tp1_price_for(price, atr, side)
         rr_ok, actual_rr = self.risk.rr_acceptable(price, sl, tp, side)
 
         # EV stats are tracked per slot_key so each strategy has independent stats
@@ -920,6 +919,31 @@ class TradingBot:
         can_open, reason = self.risk.can_open(slot_key)
         if not can_open:
             self.log.info("  ⛔ %s[%s]  %s", symbol, timeframe_label, reason)
+            # Record skipped signals caused by the per-symbol position limit so we
+            # can replay them later and decide whether allowing stacked positions
+            # would have improved overall performance.
+            if "symbol already has an open position" in reason or "already have an open position" in reason:
+                blocking = next(
+                    (k for k in self.risk.open_positions
+                     if self.risk._base_symbol(k) == self.risk._base_symbol(slot_key)),
+                    ""
+                )
+                sig_str = "BUY" if signal == BUY else "SELL"
+                ev, _, _ = self.strategy.stats.ev_and_winrate(slot_key)
+                self.logger.log_skipped(
+                    slot_key     = slot_key,
+                    symbol       = symbol,
+                    timeframe    = timeframe_label,
+                    signal       = sig_str,
+                    confidence   = confidence,
+                    entry_price  = price,
+                    sl_price     = sl,
+                    tp_price     = tp,
+                    rr           = actual_rr,
+                    ev_pct       = ev * 100 if ev is not None else None,
+                    skip_reason  = reason,
+                    blocking_slot = blocking,
+                )
             return False
         if qty <= 0:
             self.log.warning("  ⚠️  %s[%s]  Position size is 0 — check ATR/equity",
@@ -937,7 +961,7 @@ class TradingBot:
                     pair=symbol, side="long",
                     entry_price=price, quantity=qty,
                     stop_loss=sl, take_profit=tp,
-                    tp1_price=tp1, quantity_original=qty,
+                    tp1_price=0.0, quantity_original=qty,  # TP1 disabled — pure SL/TP only
                     leverage=leverage,
                     entry_time=utcnow().isoformat(),
                     order_id=order_id,
@@ -956,7 +980,7 @@ class TradingBot:
                     pair=symbol, side="short",
                     entry_price=price, quantity=qty,
                     stop_loss=sl, take_profit=tp,
-                    tp1_price=tp1, quantity_original=qty,
+                    tp1_price=0.0, quantity_original=qty,  # TP1 disabled — pure SL/TP only
                     leverage=leverage,
                     entry_time=utcnow().isoformat(),
                     order_id=order_id,
@@ -974,46 +998,26 @@ class TradingBot:
 
     def monitor_exits(self):
         """
-        Runs every 5 min. Handles three exit scenarios for open positions:
-
-        1. Stop-loss / final TP  → full close (same as before)
-        2. TP1 hit               → partial close (50%), move SL to breakeven
-        3. LTF reversal (1h)     → full close of remaining qty if TP1 already hit
-           (momentum fading signal — lets winners run further than a fixed TP)
+        Runs every 5 min. Pure SL/TP exits only — matching the backtest methodology.
+        TP1 partial close and LTF reversal exit are disabled so live behaviour
+        matches exactly what was proven profitable in the walk-forward backtest.
         """
         if not self.risk.open_positions:
             return
 
-        # Iterate over a snapshot of slot_key → Position entries
-        # (slot_key is "SYMBOL_TF" e.g. "BTCUSDT_UMCBL_4h")
         for slot_key, pos in list(self.risk.open_positions.items()):
             symbol = pos.pair
-
-            # Derive the TF label from slot_key for record_outcome calls
-            # slot_key format: "SYMBOL_TFlabel"  e.g. "BTCUSDT_UMCBL_4h"
             tf_label = slot_key.replace(symbol + "_", "") if "_" in slot_key else self._sym_tf_label(symbol)
 
-            # Quick candle fetch for current price
             df = self.fetch_candles(symbol, limit=10)
             if df is None or df.empty:
                 continue
             price = self.live_price(symbol, df)
 
-            # Update MAE / MFE before checking exits (records worst/best price seen)
             self.risk.update_excursion(slot_key, price)
 
             exit_reason = self.risk.should_exit(slot_key, price)
 
-            # ── TP1: partial close — position stays open ───────────────────
-            if exit_reason == "tp1":
-                partial_qty = round(pos.quantity_original * self.risk.tp1_close_pct, 6)
-                self._close_pos(symbol, partial_qty, price, pos.side)
-                trade = self.risk.partial_close(slot_key, price)
-                if trade:
-                    self.logger.log_trade(trade, self.risk.equity, "tp1_partial")
-                continue
-
-            # ── SL or final TP: full close ─────────────────────────────────
             if exit_reason in ("stop_loss", "take_profit"):
                 self.log.info("🚨 %s  %s[%s]  @ £%.4f", exit_reason.upper(), symbol, tf_label, price)
                 self._close_pos(symbol, pos.quantity, price, pos.side)
@@ -1027,25 +1031,6 @@ class TradingBot:
                             trade, full_df, symbol=symbol,
                             timeframe_label=tf_label,
                         )
-                continue
-
-            # ── LTF reversal exit (only after TP1 has been hit) ───────────
-            if pos.tp1_hit:
-                ltf_df = self.fetch_candles(symbol, tf=self.ltf_tf, limit=50)
-                if self._ltf_reversal(ltf_df, pos.side):
-                    self.log.info("📉 LTF reversal exit  %s[%s]  @ £%.4f",
-                                  symbol, tf_label, price)
-                    self._close_pos(symbol, pos.quantity, price, pos.side)
-                    trade = self.risk.close_position(slot_key, price)
-                    if trade:
-                        trade["slot_key"] = slot_key
-                        self.logger.log_trade(trade, self.risk.equity, "ltf_reversal")
-                        full_df = self.fetch_candles(symbol)
-                        if full_df is not None:
-                            self.strategy.record_outcome(
-                                trade, full_df, symbol=symbol,
-                                timeframe_label=tf_label,
-                            )
 
     # ── Background data accumulation ─────────────────────────────────────────
 
@@ -1359,7 +1344,8 @@ if __name__ == "__main__":
         _sl_mult  = _rc.get("stop_loss_atr_mult",   2.2)
         _tp_mult  = _rc.get("take_profit_atr_mult", 3.5)
 
-        _all_results = bt.run_all(_data_dir, _sl_mult, _tp_mult)
+        _models_dir  = _cfg.get("logging", {}).get("models_dir", "/data/models/")
+        _all_results = bt.run_all(_data_dir, _sl_mult, _tp_mult, models_dir=_models_dir)
         bt.print_report(_all_results)
 
         _out = os.path.join(_data_dir, "backtest_results.json")
