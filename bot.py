@@ -627,6 +627,14 @@ class TradingBot:
                     "cv_accuracy": 0.0,
                 })
 
+        # Deduplicate by slot_key — keep highest cv_accuracy entry per slot
+        seen: dict = {}
+        for s in strategies:
+            key = s["slot_key"]
+            if key not in seen or s.get("cv_accuracy", 0) > seen[key].get("cv_accuracy", 0):
+                seen[key] = s
+        strategies = sorted(seen.values(), key=lambda x: x.get("cv_accuracy", 0), reverse=True)
+
         self.active_strategies = strategies
         self.log.info("📊 Active strategies (%d):", len(strategies))
         for s in strategies:
@@ -636,7 +644,10 @@ class TradingBot:
     def _initial_train(self):
         """
         Train a separate model per active strategy (symbol × timeframe).
-        Uses historical CSV data where available, falls back to live candles.
+        Skips training if a backtest-saved model is already loaded for that
+        slot — the backtest model is preferred as it was trained on the full
+        70% split and its confidence scores are directly comparable to the
+        0.55 threshold proven in walk-forward testing.
         """
         strategies = self.active_strategies or [
             {
@@ -654,8 +665,13 @@ class TradingBot:
             sig_label = strat["tf_label"]
             tf_min    = strat["tf_min"]
 
-            self.log.info("⏳ Training model for %s [%s]…", name, sig_label)
+            # Skip if backtest already saved a model for this slot
+            sym_key = self.strategy._sym_key(symbol, sig_label)
+            if sym_key in self.strategy.symbol_models:
+                self.log.info("✅ %s [%s] — backtest model loaded, skipping retrain.", name, sig_label)
+                continue
 
+            self.log.info("⏳ Training model for %s [%s]…", name, sig_label)
             hist = self.strategy.load_historical_candles(symbol, sig_label)
             if hist is not None and len(hist) >= self.strategy.min_samples:
                 self.strategy.train(hist, symbol=symbol, timeframe_label=sig_label)
