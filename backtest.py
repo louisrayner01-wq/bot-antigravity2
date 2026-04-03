@@ -311,7 +311,10 @@ def _train(df_raw: pd.DataFrame,
     df["label"] = label_candles(df, threshold=threshold)
 
     feats = [c for c in FEATURE_COLS if c in df.columns]
-    cols  = feats + ["label", "high", "low", "close", "atr_14", "timestamp"]
+    # Build column list without duplicates — atr_14 is already in FEATURE_COLS
+    extra = [c for c in ["label", "high", "low", "close", "atr_14", "timestamp"]
+             if c not in feats]
+    cols  = feats + extra
     df    = df[cols].dropna(subset=feats + ["atr_14"])
 
     n     = len(df)

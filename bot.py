@@ -1330,7 +1330,14 @@ if __name__ == "__main__":
         _log.info("Step 1/3  Collecting data…")
         try:
             from data_collector import DataCollector
-            _collector = DataCollector(_cfg)
+            from weex_client import WeexClient as _WeexClient
+            _ec = _cfg.get("exchange", {})
+            _client = _WeexClient(
+                api_key=_ec["api_key"], api_secret=_ec["api_secret"],
+                passphrase=_ec["passphrase"], base_url=_ec["base_url"],
+            )
+            _data_dir = _cfg.get("data", {}).get("data_dir", "/data")
+            _collector = DataCollector(_client, data_dir=_data_dir)
             _collector.collect_all()
         except Exception as _exc:
             _log.warning("Data collection error (continuing): %s", _exc)
