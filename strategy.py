@@ -603,6 +603,30 @@ class TradingStrategy:
             return SELL, buy_p, sell_p
         return HOLD, buy_p, sell_p
 
+    def predict_mtf(self,
+                    df_entry:           pd.DataFrame,
+                    df_direction:       pd.DataFrame,
+                    symbol:             str,
+                    entry_tf_label:     str,
+                    direction_tf_label: str) -> Tuple[int, float, float]:
+        """
+        Multi-timeframe entry confirmation signal.
+
+        Step 1 — direction: use htf_trend() on df_direction (EMA21 + MACD rule).
+        Step 2 — entry:     use the entry-TF model via predict().
+        Step 3 — gate:      apply_confluence() suppresses entries that fight
+                            the direction-TF trend.
+
+        ATR for stop sizing is taken from df_entry (tighter stop → better R/R).
+        No extra model training required — direction uses the rule-based trend,
+        entry uses the already-trained entry-TF model.
+        """
+        direction = self.htf_trend(df_direction)
+        signal, buy_p, sell_p = self.predict(df_entry, symbol=symbol,
+                                              timeframe_label=entry_tf_label)
+        signal, buy_p, sell_p = self.apply_confluence(signal, buy_p, sell_p, direction)
+        return signal, buy_p, sell_p
+
     # ── Expected Value gate ───────────────────────────────────────────────────
 
     def trade_is_worth_it(self, symbol: str) -> Tuple[bool, str]:

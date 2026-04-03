@@ -342,6 +342,101 @@ def analyse_confluence(signal_df: pd.DataFrame,
     return result
 
 
+# ── Multi-timeframe entry confirmation analysis ───────────────────────────────
+
+def analyse_mtf_entry(direction_df: pd.DataFrame,
+                      entry_df:     pd.DataFrame,
+                      direction_tf: str,
+                      entry_tf:     str,
+                      symbol:       str) -> Optional[Dict[str, Any]]:
+    """
+    Discover whether requiring a higher-TF direction to agree with a lower-TF
+    entry signal improves predictive accuracy.
+
+    Logic:
+      • Label entry-TF candles with their own adaptive threshold.
+      • Compute higher-TF trend (+1/0/-1) from EMA21+MACD on direction_df.
+      • Forward-fill direction onto entry-TF timestamps.
+      • Baseline: RF accuracy on all entry-TF directional labels.
+      • Filtered: RF accuracy on only those labels where direction agrees.
+      • A pair is useful if accuracy improves >= 2pp AND enough samples survive.
+
+    Returns None if data is insufficient or the gain is negligible.
+    """
+    min_samples = TF_MIN_SAMPLES.get(entry_tf, _DEFAULT_MIN_SAMPLES)
+    entry_thresh = compute_adaptive_threshold(entry_df)
+
+    entry_df  = compute_features(entry_df.copy())
+    entry_labels = label_candles(entry_df, threshold=entry_thresh)
+    entry_df["label"] = entry_labels
+
+    # Higher-TF trend indexed by timestamp
+    htrend = _higher_tf_trend(direction_df.copy())
+
+    entry_df = entry_df.set_index("timestamp")
+    entry_df["dir_signal"] = np.nan
+    entry_df["dir_signal"] = (
+        entry_df["dir_signal"].combine_first(htrend.reindex(entry_df.index))
+    )
+    entry_df["dir_signal"] = entry_df["dir_signal"].ffill()
+    entry_df = entry_df.reset_index().dropna(subset=["label", "dir_signal"])
+    entry_df = entry_df[entry_df["label"] != HOLD]
+
+    if len(entry_df) < min_samples:
+        return None
+
+    # Baseline accuracy on all directional labels
+    def _acc(subset: pd.DataFrame) -> float:
+        if len(subset) < 20:
+            return 0.0
+        feats = [c for c in FEATURE_COLS if c in subset.columns]
+        X = subset[feats].dropna()
+        if len(X) < 20:
+            return 0.0
+        y = subset.loc[X.index, "label"]
+        scaler = StandardScaler()
+        X_s = scaler.fit_transform(X)
+        rf  = RandomForestClassifier(n_estimators=50, max_depth=6,
+                                      random_state=42, n_jobs=-1)
+        cv  = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+        try:
+            scores = cross_val_score(rf, X_s, y, cv=cv, scoring="accuracy")
+            return float(np.mean(scores))
+        except Exception:
+            return 0.0
+
+    baseline_acc = _acc(entry_df)
+
+    # Filtered: only signals where direction agrees with label
+    conf_buys  = entry_df[(entry_df["label"] == BUY)  & (entry_df["dir_signal"] == 1)]
+    conf_sells = entry_df[(entry_df["label"] == SELL) & (entry_df["dir_signal"] == -1)]
+    filtered   = pd.concat([conf_buys, conf_sells])
+
+    if len(filtered) < 20:
+        return None
+
+    filtered_acc  = _acc(filtered)
+    accuracy_gain = round(filtered_acc - baseline_acc, 4)
+    sample_ratio  = round(len(filtered) / max(len(entry_df), 1), 4)
+
+    result = {
+        "symbol":           symbol,
+        "direction_tf":     direction_tf,
+        "entry_tf":         entry_tf,
+        "baseline_samples": len(entry_df),
+        "filtered_samples": len(filtered),
+        "baseline_accuracy": round(baseline_acc, 4),
+        "mtf_accuracy":     round(filtered_acc, 4),
+        "accuracy_gain":    accuracy_gain,
+        "sample_ratio":     sample_ratio,
+        "entry_label_threshold":     entry_thresh,
+    }
+    logger.info("  MTF %s→%s %s  |  base=%.3f → mtf=%.3f  (gain=%+.3f)  coverage=%.1f%%",
+                direction_tf, entry_tf, symbol,
+                baseline_acc, filtered_acc, accuracy_gain, sample_ratio * 100)
+    return result
+
+
 # ── Master analyser ───────────────────────────────────────────────────────────
 
 class Analyzer:
@@ -373,6 +468,7 @@ class Analyzer:
 
         tf_results:    List[Dict] = []
         conf_results:  List[Dict] = []
+        mtf_results:   List[Dict] = []
 
         for symbol in SYMBOLS:
             logger.info("── Analysing %s ──", symbol)
@@ -423,14 +519,35 @@ class Analyzer:
                     if res:
                         conf_results.append(res)
 
+            # ── MTF entry confirmation analysis ───────────────────────────────
+            # Direction timeframes: 1h, 4h, 1d (higher — provide trend direction)
+            # Entry timeframes: 5m, 15m, 1h (lower — provide the actual entry)
+            # Tests whether requiring direction_tf to agree improves entry_tf accuracy.
+            direction_tfs = [t for t in ["60", "240", "1440"] if t in tf_data]
+            entry_tfs     = [t for t in ["5", "15", "60"]     if t in tf_data]
+
+            for dir_tf in direction_tfs:
+                for ent_tf in entry_tfs:
+                    if int(dir_tf) <= int(ent_tf):
+                        continue
+                    res = analyse_mtf_entry(
+                        tf_data[dir_tf], tf_data[ent_tf],
+                        TF_LABELS[dir_tf], TF_LABELS[ent_tf],
+                        symbol,
+                    )
+                    if res:
+                        mtf_results.append(res)
+
         # ── Aggregate recommendations ─────────────────────────────────────────
-        recommendations = self._build_recommendations(tf_results, conf_results)
+        recommendations = self._build_recommendations(tf_results, conf_results,
+                                                       mtf_results)
 
         results = {
             "generated_at":      datetime.utcnow().isoformat() + "Z",
             "duration_seconds":  round(time.time() - t0, 1),
             "timeframe_results": tf_results,
             "confluence_results": conf_results,
+            "mtf_results":       mtf_results,
             "recommendations":   recommendations,
         }
 
@@ -439,14 +556,15 @@ class Analyzer:
             json.dump(results, f, indent=2)
         logger.info("Saved analysis → %s", self.results_path)
 
-        self._print_report(recommendations, tf_results, conf_results)
+        self._print_report(recommendations, tf_results, conf_results, mtf_results)
         return results
 
     # ── Recommendations ───────────────────────────────────────────────────────
 
     def _build_recommendations(self,
                                 tf_results: List[Dict],
-                                conf_results: List[Dict]) -> Dict[str, Any]:
+                                conf_results: List[Dict],
+                                mtf_results: List[Dict] = None) -> Dict[str, Any]:
         if not tf_results:
             return {}
 
@@ -504,24 +622,52 @@ class Analyzer:
         # All profitable (symbol, TF) strategies — above-chance threshold for binary
         # BUY/SELL classification.  The bot will train a separate model for each and
         # trade ALL of them simultaneously (one exchange position per symbol at a time).
-        min_acc = 0.52
-        profitable_strategies = sorted(
-            [
-                {
-                    "symbol":      r["symbol"],
-                    "timeframe":   r["timeframe"],
-                    "cv_accuracy": round(r["cv_accuracy"], 4),
-                }
-                for r in tf_results
-                if r["cv_accuracy"] >= min_acc
-            ],
-            key=lambda x: x["cv_accuracy"],
-            reverse=True,
-        )
-        logger.info("Profitable strategies (cv ≥ %.2f): %d found — %s",
-                    min_acc, len(profitable_strategies),
-                    [(s["symbol"], s["timeframe"], s["cv_accuracy"])
-                     for s in profitable_strategies])
+        min_acc     = 0.52
+        min_mtf_gain = 0.02   # minimum accuracy improvement for MTF to be worth adding
+
+        # Single-TF strategies
+        profitable_strategies = [
+            {
+                "symbol":        r["symbol"],
+                "timeframe":     r["timeframe"],
+                "cv_accuracy":   round(r["cv_accuracy"], 4),
+                "strategy_type": "single",
+            }
+            for r in tf_results
+            if r["cv_accuracy"] >= min_acc
+        ]
+
+        # MTF entry confirmation strategies — only added if analysis found a gain
+        for r in (mtf_results or []):
+            if (r["accuracy_gain"] >= min_mtf_gain
+                    and r["sample_ratio"] >= 0.15
+                    and r["mtf_accuracy"] >= min_acc):
+                profitable_strategies.append({
+                    "symbol":        r["symbol"],
+                    "timeframe":     r["entry_tf"],      # entry TF — model + ATR sizing
+                    "direction_tf":  r["direction_tf"],  # direction (higher) TF
+                    "cv_accuracy":   round(r["mtf_accuracy"], 4),
+                    "accuracy_gain": round(r["accuracy_gain"], 4),
+                    "sample_ratio":  round(r["sample_ratio"], 4),
+                    "strategy_type": "mtf",
+                })
+
+        profitable_strategies = sorted(profitable_strategies,
+                                       key=lambda x: x["cv_accuracy"], reverse=True)
+
+        single_count = sum(1 for s in profitable_strategies if s["strategy_type"] == "single")
+        mtf_count    = sum(1 for s in profitable_strategies if s["strategy_type"] == "mtf")
+        logger.info("Profitable strategies: %d single-TF + %d MTF = %d total",
+                    single_count, mtf_count, len(profitable_strategies))
+        for s in profitable_strategies:
+            if s["strategy_type"] == "mtf":
+                logger.info("  MTF  %s  %s→%s  cv=%.3f  gain=%+.3f  coverage=%.0f%%",
+                            s["symbol"], s["direction_tf"], s["timeframe"],
+                            s["cv_accuracy"], s.get("accuracy_gain", 0),
+                            s.get("sample_ratio", 0) * 100)
+            else:
+                logger.info("  STF  %s  %s  cv=%.3f",
+                            s["symbol"], s["timeframe"], s["cv_accuracy"])
 
         return {
             "best_signal_timeframe":  best_signal_tf,
@@ -546,7 +692,8 @@ class Analyzer:
     def _print_report(self,
                       recs: Dict,
                       tf_results: List[Dict],
-                      conf_results: List[Dict]) -> None:
+                      conf_results: List[Dict],
+                      mtf_results: List[Dict] = None) -> None:
         lines = [
             "",
             "╔══════════════════════════════════════════════════════════════╗",
@@ -591,6 +738,28 @@ class Analyzer:
             lines.append(f"  {r['signal_tf']:>4} + {r['filter_tf']:<4}  {r['symbol']:<12}"
                          f"  {sign}{gain:.3f}  "
                          f"({'▲ better' if gain > 0 else '▼ worse'})")
+
+        # ── MTF entry confirmation discoveries ───────────────────────────────
+        mtf_list = sorted(mtf_results or [],
+                          key=lambda x: x.get("accuracy_gain", 0), reverse=True)[:8]
+        if mtf_list:
+            lines += [
+                "",
+                "── MTF entry confirmation (direction TF → entry TF) ─────────────",
+            ]
+            for r in mtf_list:
+                gain = r.get("accuracy_gain", 0)
+                ratio = r.get("sample_ratio", 0)
+                traded = "✅ TRADED" if (gain >= 0.02 and ratio >= 0.15
+                                         and r.get("mtf_accuracy", 0) >= 0.52) else "— below threshold"
+                lines.append(
+                    f"  {r['direction_tf']:>3} → {r['entry_tf']:<4}  {r['symbol']:<12}"
+                    f"  base={r.get('baseline_accuracy', 0):.3f}"
+                    f"  mtf={r.get('mtf_accuracy', 0):.3f}"
+                    f"  gain={gain:+.3f}"
+                    f"  cov={ratio*100:.0f}%"
+                    f"  {traded}"
+                )
 
         lines.append("")
         for line in lines:

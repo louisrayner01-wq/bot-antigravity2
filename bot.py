@@ -537,11 +537,13 @@ class TradingBot:
         Populate self.active_strategies from analysis recommendations.
 
         Each strategy is a dict:
-          symbol    — exchange symbol e.g. "BTCUSDT_UMCBL"
-          tf_label  — human label e.g. "4h"
-          tf_min    — minutes string e.g. "240"
-          htf_min   — higher-TF minutes string e.g. "1440"
-          slot_key  — unique position key e.g. "BTCUSDT_UMCBL_4h"
+          symbol        — exchange symbol e.g. "BTCUSDT_UMCBL"
+          tf_label      — human label e.g. "4h"
+          tf_min        — minutes string e.g. "240"
+          htf_min       — higher-TF minutes string e.g. "1440"
+          strategy_type — "single" or "mtf"
+          dir_tf_min    — direction TF minutes (MTF only) e.g. "240"
+          slot_key      — unique position key e.g. "BTCUSDT_UMCBL_4h"
 
         Strategy list comes from analysis profitable_strategies (all (symbol, TF)
         combos that scored >= min_strategy_accuracy in backtesting).
@@ -574,6 +576,7 @@ class TradingBot:
             base    = entry["symbol"]       # e.g. "BTCUSDT"
             tf_lbl  = entry["timeframe"]    # e.g. "4h"
             accuracy = entry.get("cv_accuracy", 0)
+            stype   = entry.get("strategy_type", "single")
 
             if accuracy < min_acc:
                 continue
@@ -583,18 +586,27 @@ class TradingBot:
                 continue   # symbol not in our enabled pairs list
 
             tf_min   = _clamp(rev_map.get(tf_lbl, self.tf))
-            htf_min  = HTF_UP.get(tf_min, "1440")
             symbol   = pair_cfg["symbol"]
             slot_key = f"{symbol}_{tf_lbl}"
 
+            if stype == "mtf":
+                dir_lbl    = entry.get("direction_tf", "")
+                dir_tf_min = rev_map.get(dir_lbl, HTF_UP.get(tf_min, "1440"))
+                htf_min    = dir_tf_min   # for exit/ATR sizing — same TF
+            else:
+                dir_tf_min = None
+                htf_min    = HTF_UP.get(tf_min, "1440")
+
             strategies.append({
-                "symbol":   symbol,
-                "name":     pair_cfg["name"],
-                "tf_label": TF_LABELS.get(tf_min, tf_lbl),
-                "tf_min":   tf_min,
-                "htf_min":  htf_min,
-                "slot_key": slot_key,
-                "cv_accuracy": accuracy,
+                "symbol":        symbol,
+                "name":          pair_cfg["name"],
+                "tf_label":      TF_LABELS.get(tf_min, tf_lbl),
+                "tf_min":        tf_min,
+                "htf_min":       htf_min,
+                "dir_tf_min":    dir_tf_min,
+                "strategy_type": stype,
+                "slot_key":      slot_key,
+                "cv_accuracy":   accuracy,
             })
 
         if not strategies:
@@ -842,21 +854,27 @@ class TradingBot:
 
     def _try_enter(self, symbol: str, df: pd.DataFrame,
                    price: float, atr: float, htf_direction: int,
-                   slot_key: str = "", timeframe_label: str = "") -> bool:
+                   slot_key: str = "", timeframe_label: str = "",
+                   _signal: int = None, _buy_p: float = None,
+                   _sell_p: float = None) -> bool:
         """
         Evaluate a potential entry for `symbol` given current candle data.
         slot_key   — position registry key e.g. "BTCUSDT_UMCBL_4h"
         timeframe_label — signal TF label e.g. "4h" (selects the right model)
+        _signal/_buy_p/_sell_p — pre-computed signal (skips internal predict).
         Called from both tick() and scan_entries().
         Returns True if a position was opened.
         """
         if not slot_key:
             slot_key = symbol
-        signal, buy_p, sell_p = self.strategy.predict(df, symbol=symbol,
-                                                       timeframe_label=timeframe_label)
-        signal, buy_p, sell_p = self.strategy.apply_confluence(
-            signal, buy_p, sell_p, htf_direction
-        )
+        if _signal is not None:
+            signal, buy_p, sell_p = _signal, _buy_p, _sell_p
+        else:
+            signal, buy_p, sell_p = self.strategy.predict(df, symbol=symbol,
+                                                           timeframe_label=timeframe_label)
+            signal, buy_p, sell_p = self.strategy.apply_confluence(
+                signal, buy_p, sell_p, htf_direction
+            )
 
         confidence = buy_p if signal == BUY else sell_p if signal == SELL else max(buy_p, sell_p)
 
@@ -1114,21 +1132,34 @@ class TradingBot:
             price = self.live_price(symbol, df)
             atr   = float(df["atr_14"].iloc[-1]) if "atr_14" in df.columns else price * 0.01
 
-            htf_df = self.fetch_candles(symbol, tf=htf_min, limit=100) if htf_min != tf_min else None
-            htf_direction = self.strategy.htf_trend(htf_df) if htf_df is not None else 0
+            stype      = strat.get("strategy_type", "single")
+            dir_tf_min = strat.get("dir_tf_min")
 
-            signal, buy_p, sell_p = self.strategy.predict(df, symbol=symbol,
-                                                           timeframe_label=tf_label)
-            signal, buy_p, sell_p = self.strategy.apply_confluence(
-                signal, buy_p, sell_p, htf_direction
-            )
+            if stype == "mtf" and dir_tf_min:
+                dir_df = self.fetch_candles(symbol, tf=dir_tf_min, limit=100)
+                dir_lbl = TF_LABELS.get(dir_tf_min, dir_tf_min)
+                signal, buy_p, sell_p = self.strategy.predict_mtf(
+                    df, dir_df, symbol=symbol,
+                    entry_tf_label=tf_label,
+                    direction_tf_label=dir_lbl,
+                )
+                htf_direction = self.strategy.htf_trend(dir_df) if dir_df is not None else 0
+            else:
+                htf_df = self.fetch_candles(symbol, tf=htf_min, limit=100) if htf_min != tf_min else None
+                htf_direction = self.strategy.htf_trend(htf_df) if htf_df is not None else 0
+                signal, buy_p, sell_p = self.strategy.predict(df, symbol=symbol,
+                                                               timeframe_label=tf_label)
+                signal, buy_p, sell_p = self.strategy.apply_confluence(
+                    signal, buy_p, sell_p, htf_direction
+                )
 
             if signal == 0:
                 results.append(f"{name}[{tf_label}]→HOLD(b{buy_p:.2f}/s{sell_p:.2f})")
                 continue
 
             entered = self._try_enter(symbol, df, price, atr, htf_direction,
-                                      slot_key=slot_key, timeframe_label=tf_label)
+                                      slot_key=slot_key, timeframe_label=tf_label,
+                                      _signal=signal, _buy_p=buy_p, _sell_p=sell_p)
             results.append(f"{name}[{tf_label}]→{'ENTERED' if entered else 'BLOCKED'}")
 
         self.log.info("🔍 Scan @ %s  |  %s",
@@ -1171,14 +1202,29 @@ class TradingBot:
             price = self.live_price(symbol, df)
             atr   = float(df["atr_14"].iloc[-1]) if "atr_14" in df.columns else price * 0.01
 
-            htf_df = self.fetch_candles(symbol, tf=htf_min, limit=100) if htf_min != tf_min else None
-            htf_direction = self.strategy.htf_trend(htf_df) if htf_df is not None else 0
+            stype      = strat.get("strategy_type", "single")
+            dir_tf_min = strat.get("dir_tf_min")
 
             if slot_key in self.risk.open_positions:
                 continue
 
-            self._try_enter(symbol, df, price, atr, htf_direction,
-                            slot_key=slot_key, timeframe_label=tf_label)
+            if stype == "mtf" and dir_tf_min:
+                dir_df = self.fetch_candles(symbol, tf=dir_tf_min, limit=100)
+                dir_lbl = TF_LABELS.get(dir_tf_min, dir_tf_min)
+                htf_direction = self.strategy.htf_trend(dir_df) if dir_df is not None else 0
+                signal, buy_p, sell_p = self.strategy.predict_mtf(
+                    df, dir_df, symbol=symbol,
+                    entry_tf_label=tf_label,
+                    direction_tf_label=dir_lbl,
+                )
+                self._try_enter(symbol, df, price, atr, htf_direction,
+                                slot_key=slot_key, timeframe_label=tf_label,
+                                _signal=signal, _buy_p=buy_p, _sell_p=sell_p)
+            else:
+                htf_df = self.fetch_candles(symbol, tf=htf_min, limit=100) if htf_min != tf_min else None
+                htf_direction = self.strategy.htf_trend(htf_df) if htf_df is not None else 0
+                self._try_enter(symbol, df, price, atr, htf_direction,
+                                slot_key=slot_key, timeframe_label=tf_label)
 
         # Performance summary every 5 ticks
         if self._tick_count % 5 == 0:
@@ -1261,5 +1307,60 @@ class TradingBot:
 
 # ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    if os.getenv("RUN_BACKTEST", "false").lower() == "true":
+        # ── Backtest mode ─────────────────────────────────────────────────────
+        # Set RUN_BACKTEST=true on Railway to run a walk-forward backtest over
+        # all profitable strategies from analysis, then exit.
+        # Remove the env var to resume normal trading.
+        import backtest as bt
+        import yaml as _yaml
+        import json as _json
+
+        logging.basicConfig(level=logging.INFO,
+                            format="%(asctime)s  %(levelname)-8s  %(message)s")
+        _log = logging.getLogger("backtest-main")
+        _log.info("═══ RUN_BACKTEST=true — entering backtest mode ═══")
+
+        _cfg = {}
+        if os.path.exists("config.yaml"):
+            with open("config.yaml") as _f:
+                _cfg = _yaml.safe_load(_f)
+
+        # Step 1: collect fresh data
+        _log.info("Step 1/3  Collecting data…")
+        try:
+            from data_collector import DataCollector
+            _collector = DataCollector(_cfg)
+            _collector.collect_all()
+        except Exception as _exc:
+            _log.warning("Data collection error (continuing): %s", _exc)
+
+        # Step 2: run analysis so profitable_strategies + confluence_results exist
+        _log.info("Step 2/3  Running analysis…")
+        try:
+            from analysis import Analyzer
+            _data_dir = _cfg.get("data", {}).get("data_dir", "/data")
+            _analyzer = Analyzer(data_dir=_data_dir, results_dir=_data_dir)
+            _analyzer.run()
+        except Exception as _exc:
+            _log.warning("Analysis error (continuing with existing results): %s", _exc)
+
+        # Step 3: backtest every profitable strategy identified by analysis
+        _log.info("Step 3/3  Running walk-forward backtests…")
+        _data_dir = _cfg.get("data", {}).get("data_dir", "/data")
+        _rc       = _cfg.get("risk", {})
+        _sl_mult  = _rc.get("stop_loss_atr_mult",   2.2)
+        _tp_mult  = _rc.get("take_profit_atr_mult", 3.5)
+
+        _all_results = bt.run_all(_data_dir, _sl_mult, _tp_mult)
+        bt.print_report(_all_results)
+
+        _out = os.path.join(_data_dir, "backtest_results.json")
+        with open(_out, "w") as _f:
+            _json.dump({"results": _all_results}, _f, indent=2, default=str)
+        _log.info("Full results saved → %s", _out)
+        _log.info("═══ Backtest complete — exiting ═══")
+        raise SystemExit(0)
+
     bot = TradingBot("config.yaml")
     bot.run()
