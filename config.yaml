@@ -68,6 +68,16 @@ strategy:
   min_ev_trades:    10     # Minimum trades before EV gate is enforced
   min_strategy_accuracy: 0.52  # Min CV accuracy for a (symbol, TF) strategy to be traded
 
+  # Strategies proven unprofitable in backtest — blocked regardless of cv_accuracy.
+  # Format: "{SYMBOL}_{TF}"  e.g. "BTCUSDT_UMCBL_4h"
+  blocked_slots:
+    - "BTCUSDT_UMCBL_4h"   # EV +0.098% but only +4.5% over 2yr, MaxDD -33%
+    - "BTCUSDT_UMCBL_1d"   # EV -6.19%, PnL -49.5%
+    - "ETHUSDT_UMCBL_4h"   # EV -0.443%, PnL -19.5%
+    - "ETHUSDT_UMCBL_1d"   # EV -11.72%, PnL -35.2%
+    - "SOLUSDT_UMCBL_4h"   # EV -1.37%, PnL -50.8%
+    - "SOLUSDT_UMCBL_1d"   # EV -6.19%, PnL -31.0%
+
   # ── Hold / exit rules ──────────────────────────────────────────────────────
   min_holding_candles: 2
 

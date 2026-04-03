@@ -551,10 +551,11 @@ class TradingBot:
         """
         HTF_UP      = {"5": "60", "15": "60", "60": "240", "240": "1440", "1440": "1440"}
         rev_map     = {v: k for k, v in TF_LABELS.items()}
-        min_acc     = self.cfg.get("strategy", {}).get("min_strategy_accuracy", 0.52)
-        data_cfg    = self.cfg.get("data", {})
-        min_tf_cfg  = data_cfg.get("min_signal_tf_minutes")
-        max_tf_cfg  = data_cfg.get("max_signal_tf_minutes")
+        min_acc       = self.cfg.get("strategy", {}).get("min_strategy_accuracy", 0.52)
+        blocked_slots = set(self.cfg.get("strategy", {}).get("blocked_slots", []))
+        data_cfg      = self.cfg.get("data", {})
+        min_tf_cfg    = data_cfg.get("min_signal_tf_minutes")
+        max_tf_cfg    = data_cfg.get("max_signal_tf_minutes")
 
         def _clamp(tf_min_str: str) -> str:
             n = int(tf_min_str)
@@ -588,6 +589,10 @@ class TradingBot:
             tf_min   = _clamp(rev_map.get(tf_lbl, self.tf))
             symbol   = pair_cfg["symbol"]
             slot_key = f"{symbol}_{tf_lbl}"
+
+            if slot_key in blocked_slots:
+                self.log.info("📊 Skipping blocked slot: %s", slot_key)
+                continue
 
             if stype == "mtf":
                 dir_lbl    = entry.get("direction_tf", "")
