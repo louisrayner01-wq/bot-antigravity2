@@ -639,32 +639,14 @@ class TradingStrategy:
 
     def trade_is_worth_it(self, symbol: str) -> Tuple[bool, str]:
         """
-        Mathematical go/no-go for each trade.
-        Returns (should_trade, reason_string).
-
-        Checks:
-          1. Enough historical trades to evaluate (if not, we trade freely to gather data)
-          2. Win rate >= min_win_rate
-          3. Expected Value > min_ev
+        EV gate disabled — backtest edge is trusted over live sample noise.
+        Always returns True so every signal that passes confidence + HTF
+        filters is taken, matching backtest behaviour exactly.
         """
         ev, win_rate, avg_rr = self.stats.ev_and_winrate(symbol)
-
-        # Not enough data yet — trade to gather it
-        if ev is None:
-            n = len(self.stats.for_pair(symbol))
-            return True, f"Gathering data ({n}/{self.min_ev_trades} trades)"
-
-        # Win rate check
-        if win_rate < self.min_win_rate:
-            return False, (f"Win rate {win_rate*100:.1f}% < minimum {self.min_win_rate*100:.0f}% "
-                           f"— skipping until performance improves")
-
-        # EV check
-        if ev < self.min_ev:
-            return False, (f"EV {ev*100:+.3f}% < minimum {self.min_ev*100:.2f}% "
-                           f"— not enough mathematical edge")
-
-        return True, (f"✅ EV={ev*100:+.3f}%  win_rate={win_rate*100:.1f}%  avg_rr={avg_rr:.2f}")
+        if ev is not None:
+            return True, (f"EV={ev*100:+.3f}%  win_rate={win_rate*100:.1f}%  avg_rr={avg_rr:.2f}")
+        return True, "EV gate disabled — taking all signals"
 
     # ── Outcome recording (triggers retraining) ───────────────────────────────
 
