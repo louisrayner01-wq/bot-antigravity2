@@ -599,7 +599,7 @@ class TradingStrategy:
             logger.debug("Prediction transform error: %s", exc)
             return HOLD, 0.0, 0.0
 
-        proba   = model.predict_proba(X_scaled)[0]
+        proba   = model.predict_proba(X_scaled.values)[0]
         classes = list(model.classes_)
 
         buy_p  = float(proba[classes.index(BUY)])  if BUY  in classes else 0.0
