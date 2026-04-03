@@ -16,16 +16,17 @@ trading:
     - symbol:     "BTCUSDT_UMCBL"
       name:       "BTC"
       enabled:    true
-      allocation: 0.50       # 50 % of capital on BTC
+      allocation: 0.34
 
     - symbol:     "ETHUSDT_UMCBL"
       name:       "ETH"
       enabled:    true
-      allocation: 0.50       # 50 % of capital on ETH
+      allocation: 0.33
 
     - symbol:     "SOLUSDT_UMCBL"
       name:       "SOL"
-      enabled:    false      # Disabled — 44.7% win rate / 32-loss streak weaker than BTC/ETH
+      enabled:    true
+      allocation: 0.33
 
   timeframe:              "15"   # Signal candle granularity (minutes) — 15m proven at 48%+ win rate
   lookback_candles:       300    # Candles fetched per request
