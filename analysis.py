@@ -652,21 +652,45 @@ class Analyzer:
                     "strategy_type": "mtf",
                 })
 
+        # Confluence strategies — signal TF filtered by higher-TF EMA21 trend
+        # Only added if the filter meaningfully improves accuracy and enough
+        # signals survive the filter (coverage >= 15%).
+        min_conf_gain = 0.02
+        for r in (conf_results or []):
+            if (r["accuracy_gain"] >= min_conf_gain
+                    and r.get("signal_coverage", 1.0) >= 0.15
+                    and r["filtered_accuracy"] >= min_acc):
+                profitable_strategies.append({
+                    "symbol":        r["symbol"],
+                    "timeframe":     r["signal_tf"],     # entry TF — model + ATR sizing
+                    "filter_tf":     r["filter_tf"],     # HTF confluence filter
+                    "cv_accuracy":   round(r["filtered_accuracy"], 4),
+                    "accuracy_gain": round(r["accuracy_gain"], 4),
+                    "sample_ratio":  round(r.get("signal_coverage", 0), 4),
+                    "strategy_type": "confluence",
+                })
+
         profitable_strategies = sorted(profitable_strategies,
                                        key=lambda x: x["cv_accuracy"], reverse=True)
 
         single_count = sum(1 for s in profitable_strategies if s["strategy_type"] == "single")
         mtf_count    = sum(1 for s in profitable_strategies if s["strategy_type"] == "mtf")
-        logger.info("Profitable strategies: %d single-TF + %d MTF = %d total",
-                    single_count, mtf_count, len(profitable_strategies))
+        conf_count   = sum(1 for s in profitable_strategies if s["strategy_type"] == "confluence")
+        logger.info("Profitable strategies: %d single-TF + %d MTF + %d confluence = %d total",
+                    single_count, mtf_count, conf_count, len(profitable_strategies))
         for s in profitable_strategies:
             if s["strategy_type"] == "mtf":
-                logger.info("  MTF  %s  %s→%s  cv=%.3f  gain=%+.3f  coverage=%.0f%%",
+                logger.info("  MTF   %s  %s→%s  cv=%.3f  gain=%+.3f  coverage=%.0f%%",
                             s["symbol"], s["direction_tf"], s["timeframe"],
                             s["cv_accuracy"], s.get("accuracy_gain", 0),
                             s.get("sample_ratio", 0) * 100)
+            elif s["strategy_type"] == "confluence":
+                logger.info("  CONF  %s  %s+%s  cv=%.3f  gain=%+.3f  coverage=%.0f%%",
+                            s["symbol"], s["timeframe"], s["filter_tf"],
+                            s["cv_accuracy"], s.get("accuracy_gain", 0),
+                            s.get("sample_ratio", 0) * 100)
             else:
-                logger.info("  STF  %s  %s  cv=%.3f",
+                logger.info("  STF   %s  %s  cv=%.3f",
                             s["symbol"], s["timeframe"], s["cv_accuracy"])
 
         return {

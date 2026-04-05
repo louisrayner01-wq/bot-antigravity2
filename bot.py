@@ -588,7 +588,15 @@ class TradingBot:
 
             tf_min   = _clamp(rev_map.get(tf_lbl, self.tf))
             symbol   = pair_cfg["symbol"]
-            slot_key = f"{symbol}_{tf_lbl}"
+
+            # Confluence strategies get a slot_key that includes the filter TF
+            # so BTC_15m+1d and BTC_15m+4h are independent slots.
+            if stype == "confluence":
+                filter_lbl = entry.get("filter_tf", "")
+                slot_key   = f"{symbol}_{tf_lbl}+{filter_lbl}" if filter_lbl else f"{symbol}_{tf_lbl}"
+            else:
+                filter_lbl = ""
+                slot_key   = f"{symbol}_{tf_lbl}"
 
             if slot_key in blocked_slots:
                 self.log.info("📊 Skipping blocked slot: %s", slot_key)
@@ -598,6 +606,9 @@ class TradingBot:
                 dir_lbl    = entry.get("direction_tf", "")
                 dir_tf_min = rev_map.get(dir_lbl, HTF_UP.get(tf_min, "1440"))
                 htf_min    = dir_tf_min   # for exit/ATR sizing — same TF
+            elif stype == "confluence":
+                dir_tf_min  = None
+                htf_min     = rev_map.get(filter_lbl, HTF_UP.get(tf_min, "1440"))
             else:
                 dir_tf_min = None
                 htf_min    = HTF_UP.get(tf_min, "1440")
@@ -610,6 +621,7 @@ class TradingBot:
                 "htf_min":       htf_min,
                 "dir_tf_min":    dir_tf_min,
                 "strategy_type": stype,
+                "filter_tf":     filter_lbl,
                 "slot_key":      slot_key,
                 "cv_accuracy":   accuracy,
             })
