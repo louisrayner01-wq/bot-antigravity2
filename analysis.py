@@ -670,6 +670,19 @@ class Analyzer:
                     "strategy_type": "confluence",
                 })
 
+        # Drop single-TF entries where a confluence version of the same
+        # (symbol, timeframe) exists — the confluence version is strictly better.
+        conf_pairs = {
+            (s["symbol"], s["timeframe"])
+            for s in profitable_strategies
+            if s["strategy_type"] == "confluence"
+        }
+        profitable_strategies = [
+            s for s in profitable_strategies
+            if not (s["strategy_type"] == "single"
+                    and (s["symbol"], s["timeframe"]) in conf_pairs)
+        ]
+
         profitable_strategies = sorted(profitable_strategies,
                                        key=lambda x: x["cv_accuracy"], reverse=True)
 
