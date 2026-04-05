@@ -45,8 +45,17 @@ risk:
   stop_loss_atr_mult:   2.2      # MAE-calibrated from 2221 simulated trades (was 1.5 — too tight)
   take_profit_atr_mult: 3.5      # MAE-calibrated from 2221 simulated trades (was 3.0)
   min_rr_ratio:         1.5      # Reject any trade where actual R/R falls below 1.5
-  max_open_positions:   3        # One per symbol (BTC/ETH/SOL) — enforced by per-symbol check in risk_manager
-  max_daily_loss_abs:   10.0     # Auto-halt if we lose £10 in a single day
+  max_open_positions:   6        # 2 per symbol (one per TF tier) × 3 symbols
+  max_daily_loss_abs:   15.0     # Raised from £10 — accounts for up to 3 simultaneous stop-outs at £5 each
+
+  # ── TF-stratified slot tiers ───────────────────────────────────────────────
+  # Each symbol gets one position per tier at a time.
+  # A 1h trade on BTC no longer blocks a 15m signal on BTC.
+  # Tier A (short): 5m, 15m timeframes
+  # Tier B (long):  1h, 4h, 1d timeframes
+  tf_tiers:
+    short: ["5m", "15m"]
+    long:  ["1h", "4h", "1d"]
   max_leverage:         20       # Hard cap — leverage will never exceed this
 
   # ── Multi-TP partial exit ──────────────────────────────────────────────────

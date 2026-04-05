@@ -76,6 +76,11 @@ class RiskManager:
         self.today              = date.today()
         self.open_positions: Dict[str, Position] = {}
 
+        # TF tier config — short tier and long tier per symbol each get one slot
+        tf_tiers = rc.get("tf_tiers", {})
+        self.short_tfs: list = tf_tiers.get("short", ["5m", "15m"])
+        self.long_tfs:  list = tf_tiers.get("long",  ["1h", "4h", "1d"])
+
     # ── Equity ────────────────────────────────────────────────────────────────
 
     def update_equity(self, new_equity: float):
@@ -251,27 +256,49 @@ class RiskManager:
         parts = slot_key.rsplit("_", 1)
         return parts[0] if len(parts) == 2 else slot_key
 
-    def symbol_has_open_position(self, slot_key: str) -> bool:
-        """Returns True if any open position shares the same base symbol."""
+    def _tf_tier(self, slot_key: str) -> str:
+        """
+        Determine which tier a slot belongs to based on its TF label.
+        "BTCUSDT_UMCBL_15m+1d" → "short"  (entry TF is 15m)
+        "BTCUSDT_UMCBL_1h+1d"  → "long"   (entry TF is 1h)
+        Falls back to "long" if TF label not recognised.
+        """
+        # Extract the TF label — last token after the final underscore
+        # For confluence slots like "BTCUSDT_UMCBL_15m+1d", TF is "15m"
+        tf_part = slot_key.rsplit("_", 1)[-1]      # e.g. "15m+1d" or "1h+1d"
+        entry_tf = tf_part.split("+")[0]            # e.g. "15m" or "1h"
+        if entry_tf in self.short_tfs:
+            return "short"
+        return "long"
+
+    def symbol_tier_has_open_position(self, slot_key: str) -> bool:
+        """
+        Returns True if the same base symbol already has an open position
+        in the same TF tier. Cross-tier positions on the same symbol are allowed.
+        """
         base = self._base_symbol(slot_key)
-        return any(self._base_symbol(k) == base for k in self.open_positions)
+        tier = self._tf_tier(slot_key)
+        return any(
+            self._base_symbol(k) == base and self._tf_tier(k) == tier
+            for k in self.open_positions
+        )
 
     def can_open(self, slot_key: str) -> Tuple[bool, str]:
         """
-        slot_key is "SYMBOL_TF" (e.g. "BTCUSDT_UMCBL_4h") so two different
-        timeframe strategies on the same symbol each get their own slot.
+        TF-stratified slot gating.
 
-        Per-symbol limit: only one position per base symbol at a time.
-        BTC/ETH/SOL are highly correlated — stacking multiple TF strategies
-        on the same symbol multiplies drawdown without diversifying risk.
+        Each symbol gets one position per tier (short=5m/15m, long=1h+).
+        A 1h trade on BTC does NOT block a 15m signal on BTC — they occupy
+        different tiers. Max open positions is 6 (2 tiers × 3 symbols).
         """
         if self.trading_halted():
             return False, "daily loss limit reached"
         if slot_key in self.open_positions:
             return False, f"already have an open position for {slot_key}"
-        if self.symbol_has_open_position(slot_key):
+        if self.symbol_tier_has_open_position(slot_key):
             base = self._base_symbol(slot_key)
-            return False, f"symbol already has an open position ({base})"
+            tier = self._tf_tier(slot_key)
+            return False, f"{base} already has an open {tier}-tier position"
         if len(self.open_positions) >= self.max_open:
             return False, f"max open positions ({self.max_open}) reached"
         if self.equity < self.risk_per_trade_abs:

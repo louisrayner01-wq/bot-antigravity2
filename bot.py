@@ -984,7 +984,7 @@ class TradingBot:
             # Record skipped signals caused by the per-symbol position limit so we
             # can replay them later and decide whether allowing stacked positions
             # would have improved overall performance.
-            if "symbol already has an open position" in reason or "already have an open position" in reason:
+            if "already has an open" in reason or "already have an open position" in reason:
                 blocking = next(
                     (k for k in self.risk.open_positions
                      if self.risk._base_symbol(k) == self.risk._base_symbol(slot_key)),
