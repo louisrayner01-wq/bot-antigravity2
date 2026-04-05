@@ -50,8 +50,10 @@ from risk_manager  import RiskManager, Position
 from trade_logger  import TradeLogger
 from data_collector import DataCollector, TF_LABELS
 from analysis      import Analyzer
-from mae_analyser  import MAEAnalyser
+from mae_analyser   import MAEAnalyser
 from historical_mae import run_historical_mae
+from news_calendar  import (entries_blocked, stops_should_tighten,
+                             next_event, NEWS_TIGHTEN_PCT)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -209,6 +211,9 @@ class TradingBot:
         self.risk      = RiskManager(self.cfg)
         self.logger    = TradeLogger(self.cfg["logging"]["trades_file"])
         self._tick_count = 0
+        # slot_key → original SL price for positions tightened ahead of news
+        # (breakeven moves are NOT stored here — they stay at breakeven after)
+        self._news_tightened_sl: Dict[str, float] = {}
 
     # ── Data ──────────────────────────────────────────────────────────────────
 
@@ -412,6 +417,9 @@ class TradingBot:
 
         self.log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         self.log.info("  STARTUP COMPLETE — entering trading loop")
+        _ne = next_event()
+        if _ne:
+            self.log.info("  📰 Next news event: %s in %.0f min", _ne[0], _ne[1])
         self.log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
     def _apply_analysis_recommendations(self):
@@ -900,6 +908,13 @@ class TradingBot:
         if not slot_key:
             slot_key = symbol
 
+        # ── News calendar gate ───────────────────────────────────────────────
+        blocked_event = entries_blocked(utcnow())
+        if blocked_event:
+            self.log.info("  ⛔ %s[%s]  entries blocked — news event: %s",
+                          symbol, timeframe_label, blocked_event)
+            return False
+
         # ── Day-of-week gate ──────────────────────────────────────────────────
         today_dow = utcnow().weekday()  # 0=Mon … 6=Sun
         sc        = self.cfg.get("strategy", {})
@@ -1057,6 +1072,76 @@ class TradingBot:
 
     # ── Exit monitor (runs every 5 min regardless of signal TF) ──────────────
 
+    def _manage_news_stops(self):
+        """
+        Called from monitor_exits() every 5 min.
+
+        T-5 min → T+5 min window:
+          • Position in profit  → move SL to breakeven (stays there after)
+          • Position not in profit → tighten SL to 0.8% from current price
+                                     but never worse than original SL
+        After T+5 min:
+          • Tightened (not-in-profit) stops restored to original SL
+          • Breakeven stops remain at breakeven
+        """
+        now        = utcnow()
+        tighten_event = stops_should_tighten(now)
+
+        if tighten_event:
+            # Inside the tighten window — apply to any position not yet tightened
+            for slot_key, pos in list(self.risk.open_positions.items()):
+                if slot_key in self._news_tightened_sl:
+                    continue   # already handled this position
+
+                symbol = pos.pair
+                df     = self.fetch_candles(symbol, limit=5)
+                if df is None or df.empty:
+                    continue
+                price = self.live_price(symbol, df)
+
+                in_profit = (price > pos.entry_price if pos.side == "long"
+                             else price < pos.entry_price)
+
+                if in_profit:
+                    if pos.stop_loss != pos.entry_price:
+                        self.log.info(
+                            "📰 NEWS [%s]  %s → SL moved to breakeven £%.4f",
+                            tighten_event, slot_key, pos.entry_price,
+                        )
+                        pos.stop_loss = pos.entry_price
+                    # Don't add to _news_tightened_sl — breakeven stays after news
+                else:
+                    original_sl = pos.stop_loss
+                    if pos.side == "long":
+                        tightened = price * (1 - NEWS_TIGHTEN_PCT)
+                        new_sl    = max(tightened, original_sl)  # never worse than original
+                    else:
+                        tightened = price * (1 + NEWS_TIGHTEN_PCT)
+                        new_sl    = min(tightened, original_sl)  # never worse than original
+
+                    if new_sl != original_sl:
+                        self.log.info(
+                            "📰 NEWS [%s]  %s → SL tightened £%.4f → £%.4f (0.8%% from £%.4f)",
+                            tighten_event, slot_key, original_sl, new_sl, price,
+                        )
+                        self._news_tightened_sl[slot_key] = original_sl
+                        pos.stop_loss = new_sl
+                    else:
+                        # Tightened SL would be worse than original — leave unchanged
+                        self._news_tightened_sl[slot_key] = original_sl  # mark as handled
+
+        elif self._news_tightened_sl:
+            # Window has passed — restore tightened stops
+            for slot_key, original_sl in list(self._news_tightened_sl.items()):
+                pos = self.risk.open_positions.get(slot_key)
+                if pos:
+                    self.log.info(
+                        "📰 NEWS over  %s → SL restored £%.4f → £%.4f",
+                        slot_key, pos.stop_loss, original_sl,
+                    )
+                    pos.stop_loss = original_sl
+            self._news_tightened_sl.clear()
+
     def monitor_exits(self):
         """
         Runs every 5 min. Pure SL/TP exits only — matching the backtest methodology.
@@ -1065,6 +1150,8 @@ class TradingBot:
         """
         if not self.risk.open_positions:
             return
+
+        self._manage_news_stops()
 
         for slot_key, pos in list(self.risk.open_positions.items()):
             symbol = pos.pair
