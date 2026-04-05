@@ -169,10 +169,12 @@ class RiskManager:
 
     # ── R/R validation ────────────────────────────────────────────────────────
 
-    def rr_acceptable(self, entry: float, sl: float, tp: float, side: str) -> Tuple[bool, float]:
+    def rr_acceptable(self, entry: float, sl: float, tp: float, side: str,
+                      min_rr: float = None) -> Tuple[bool, float]:
         """
         Returns (is_acceptable, actual_rr).
         Checks the real R/R from the ATR-derived stop and take-profit levels.
+        min_rr overrides self.min_rr when provided (used for Thursday gate).
         """
         if side == "long":
             risk   = entry - sl
@@ -184,8 +186,9 @@ class RiskManager:
         if risk <= 0:
             return False, 0.0
 
+        threshold = min_rr if min_rr is not None else self.min_rr
         rr = reward / risk
-        ok = rr >= self.min_rr
+        ok = rr >= threshold
         return ok, round(rr, 2)
 
     # ── Dynamic leverage + position sizing ───────────────────────────────────

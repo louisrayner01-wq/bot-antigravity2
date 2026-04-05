@@ -900,11 +900,40 @@ class TradingBot:
         """
         if not slot_key:
             slot_key = symbol
+
+        # ── Day-of-week gate ──────────────────────────────────────────────────
+        today_dow = utcnow().weekday()  # 0=Mon … 6=Sun
+        sc        = self.cfg.get("strategy", {})
+        day_blocks = sc.get("day_blocks", {})
+        blocked_today = day_blocks.get(today_dow, [])
+        if slot_key in blocked_today:
+            self.log.info("  ⛔ %s[%s]  blocked on day %d (day_blocks config)",
+                          symbol, timeframe_label, today_dow)
+            return False
+
+        # ── Thursday threshold + R/R overrides ───────────────────────────────
+        is_thursday = (today_dow == 3)
+        if is_thursday:
+            buy_thresh  = sc.get("thursday_buy_threshold",  self.strategy.buy_threshold)
+            sell_thresh = sc.get("thursday_sell_threshold", self.strategy.sell_threshold)
+            min_rr      = sc.get("thursday_min_rr",         self.risk.min_rr)
+        else:
+            buy_thresh  = self.strategy.buy_threshold
+            sell_thresh = self.strategy.sell_threshold
+            min_rr      = self.risk.min_rr
+
         if _signal is not None:
             signal, buy_p, sell_p = _signal, _buy_p, _sell_p
         else:
+            # Temporarily override thresholds for prediction on Thursdays
+            orig_buy  = self.strategy.buy_threshold
+            orig_sell = self.strategy.sell_threshold
+            self.strategy.buy_threshold  = buy_thresh
+            self.strategy.sell_threshold = sell_thresh
             signal, buy_p, sell_p = self.strategy.predict(df, symbol=symbol,
                                                            timeframe_label=timeframe_label)
+            self.strategy.buy_threshold  = orig_buy
+            self.strategy.sell_threshold = orig_sell
             signal, buy_p, sell_p = self.strategy.apply_confluence(
                 signal, buy_p, sell_p, htf_direction
             )
@@ -919,7 +948,7 @@ class TradingBot:
         side = "long" if signal == BUY else "short"
         sl   = self.risk.stop_loss_price(price, atr, side)
         tp   = self.risk.take_profit_price(price, atr, side)
-        rr_ok, actual_rr = self.risk.rr_acceptable(price, sl, tp, side)
+        rr_ok, actual_rr = self.risk.rr_acceptable(price, sl, tp, side, min_rr=min_rr)
 
         # EV stats are tracked per slot_key so each strategy has independent stats
         ev, win_rate, avg_rr = self.strategy.stats.ev_and_winrate(slot_key)

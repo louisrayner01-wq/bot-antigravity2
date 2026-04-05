@@ -77,6 +77,29 @@ strategy:
     - "ETHUSDT_UMCBL_1d"   # EV -11.72%, PnL -35.2%
     - "SOLUSDT_UMCBL_4h"   # EV -1.37%, PnL -50.8%
     - "SOLUSDT_UMCBL_1d"   # EV -6.19%, PnL -31.0%
+    - "SOLUSDT_UMCBL_1h+4h"  # MaxDD -25.4%, 4 of 8 months losing — replaced by SOL 1h+1d
+    - "ETHUSDT_UMCBL_1h+4h"  # Weak monthly consistency — replaced by ETH 1h+1d
+
+  # ── Day-of-week slot blocks ────────────────────────────────────────────────
+  # Slots listed here will not enter new trades on the specified days.
+  # Days: 0=Mon 1=Tue 2=Wed 3=Thu 4=Fri 5=Sat 6=Sun
+  day_blocks:
+    1:  # Tuesday — block 1h strategies with poor Tuesday edge
+      - "BTCUSDT_UMCBL_1h+1d"   # 38.5% WR, -1.07% PnL on Tuesdays
+      - "ETHUSDT_UMCBL_1h+1d"   # 43.8% WR on Tuesdays
+      - "SOLUSDT_UMCBL_1h+1d"   # 42.9% WR on Tuesdays
+    6:  # Sunday — block 1h strategies that hover near zero PnL
+      - "SOLUSDT_UMCBL_1h+1d"   # 42.9% WR, +0.03% PnL on Sundays
+      - "ETHUSDT_UMCBL_1h+1d"   # 45.5% WR, +0.24% PnL on Sundays
+      - "ETHUSDT_UMCBL_1h+4h"   # blocked entirely above — redundant but explicit
+
+  # ── Thursday confidence boost ──────────────────────────────────────────────
+  # On Thursdays, accept signals with lower model confidence (0.50 vs 0.55)
+  # but require a stricter R/R (2.0 vs 1.5) to compensate.
+  # Backtest shows Thu WR is 53-83% across all strategies — structural edge.
+  thursday_buy_threshold:  0.50
+  thursday_sell_threshold: 0.50
+  thursday_min_rr:         2.0
 
   # ── Hold / exit rules ──────────────────────────────────────────────────────
   min_holding_candles: 2
