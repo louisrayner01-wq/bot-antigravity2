@@ -1385,6 +1385,14 @@ if __name__ == "__main__":
         with open(_out, "w") as _f:
             _json.dump({"results": _all_results}, _f, indent=2, default=str)
         _log.info("Full results saved → %s", _out)
+
+        # Push summary reports to GitHub so they're readable without Railway access
+        try:
+            from push_reports import push_reports
+            push_reports(_data_dir)
+        except Exception as _exc:
+            _log.warning("Could not push reports to GitHub: %s", _exc)
+
         _log.info("═══ Backtest complete — exiting ═══")
         raise SystemExit(0)
 
