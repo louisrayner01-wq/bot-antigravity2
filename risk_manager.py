@@ -15,7 +15,7 @@ Key changes vs v1:
 import logging
 from dataclasses import dataclass
 from typing import Optional, Dict, Tuple
-from datetime import date
+from datetime import date, datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -60,18 +60,24 @@ class RiskManager:
         sc = cfg["strategy"]
 
         self.initial_capital    = rc["initial_capital"]      # £100
-        self.risk_per_trade_abs = rc["risk_per_trade_abs"]   # £5
-        self.sl_atr_mult        = rc["stop_loss_atr_mult"]   # 1.5
-        self.tp_atr_mult        = rc["take_profit_atr_mult"] # 3.0
-        self.tp1_atr_mult       = rc.get("take_profit_1_atr_mult",  1.5)  # 1:1 R/R
-        self.tp1_close_pct      = rc.get("take_profit_1_close_pct", 0.50) # 50%
-        self.min_rr             = rc["min_rr_ratio"]         # 1.5
-        self.max_open           = rc["max_open_positions"]   # 2
-        self.max_daily_loss     = rc["max_daily_loss_abs"]   # £10
+        self.sl_atr_mult        = rc["stop_loss_atr_mult"]
+        self.tp_atr_mult        = rc["take_profit_atr_mult"]
+        self.tp1_atr_mult       = rc.get("take_profit_1_atr_mult",  1.5)
+        self.tp1_close_pct      = rc.get("take_profit_1_close_pct", 0.50)
+        self.min_rr             = rc["min_rr_ratio"]
+        self.max_open           = rc["max_open_positions"]
+        self.max_daily_loss_pct = rc.get("max_daily_loss_pct", 0.12)  # 12% of current equity
         self.min_holding        = sc.get("min_holding_candles", 2)
-        self.max_leverage       = rc.get("max_leverage", 20) # hard cap
+        self.max_leverage       = rc.get("max_leverage", 20)
+
+        # ── Day-of-week risk % (applied to HWM, not current equity) ───────────
+        # 0=Mon 1=Tue 2=Wed 3=Thu 4=Fri 5=Sat 6=Sun
+        default_day_risk = {0: 0.05, 1: 0.025, 2: 0.05, 3: 0.07,
+                            4: 0.05, 5: 0.04,  6: 0.025}
+        self.day_risk_pct: dict = rc.get("day_risk_pct", default_day_risk)
 
         self.equity             = float(self.initial_capital)
+        self.hwm                = float(self.initial_capital)  # high-water mark
         self.day_start_equity   = float(self.initial_capital)
         self.today              = date.today()
         self.open_positions: Dict[str, Position] = {}
@@ -83,22 +89,37 @@ class RiskManager:
 
     # ── Equity ────────────────────────────────────────────────────────────────
 
+    def risk_amount_today(self) -> float:
+        """
+        HWM ratchet: risk is a % of the high-water mark, not current equity.
+        During drawdowns we size as if still at peak — accelerating recovery.
+        Size only grows when equity sets a new all-time high.
+        Day-of-week % applied: Thu=7%, Mon/Wed/Fri=5%, Sat=4%, Tue/Sun=2.5%.
+        """
+        dow = datetime.now(timezone.utc).weekday()
+        pct = self.day_risk_pct.get(dow, 0.05)
+        return round(self.hwm * pct, 4)
+
     def update_equity(self, new_equity: float):
         today = date.today()
         if today != self.today:
             self.day_start_equity = new_equity
             self.today = today
         self.equity = new_equity
+        # Advance HWM whenever equity sets a new high
+        if new_equity > self.hwm:
+            self.hwm = new_equity
 
     def daily_loss(self) -> float:
         return self.day_start_equity - self.equity   # positive = loss
 
     def trading_halted(self) -> bool:
-        halted = self.daily_loss() >= self.max_daily_loss
+        cap = self.equity * self.max_daily_loss_pct
+        halted = self.daily_loss() >= cap
         if halted:
             logger.warning(
-                "🛑 Daily loss limit hit (£%.2f / £%.2f). Trading halted for today.",
-                self.daily_loss(), self.max_daily_loss
+                "🛑 Daily loss limit hit (£%.2f / 12%% of £%.2f = £%.2f). Trading halted for today.",
+                self.daily_loss(), self.equity, cap
             )
         return halted
 
@@ -204,7 +225,7 @@ class RiskManager:
         Calculates BOTH position size (qty) and leverage dynamically.
 
         The logic:
-          1. We always risk exactly £risk_per_trade_abs (£5).
+          1. We risk HWM × day_risk_pct (e.g. 5% of £100 HWM = £5 on a normal day).
           2. Stop distance (in price) = ATR × sl_multiplier.
           3. qty = risk_amount / stop_distance  — the number of units needed
              so that hitting the stop loses exactly £5 (at 1x leverage).
@@ -220,7 +241,7 @@ class RiskManager:
             return 0.0, 1
 
         stop_distance = atr * self.sl_atr_mult   # price distance to stop
-        risk_amount   = self.risk_per_trade_abs  # £5
+        risk_amount   = self.risk_amount_today() # HWM × day_risk_pct
 
         # Qty to lose exactly £5 if stop hit (no leverage)
         qty = risk_amount / stop_distance
@@ -301,8 +322,8 @@ class RiskManager:
             return False, f"{base} already has an open {tier}-tier position"
         if len(self.open_positions) >= self.max_open:
             return False, f"max open positions ({self.max_open}) reached"
-        if self.equity < self.risk_per_trade_abs:
-            return False, f"equity (£{self.equity:.2f}) below minimum trade risk (£{self.risk_per_trade_abs})"
+        if self.equity < self.risk_amount_today():
+            return False, f"equity (£{self.equity:.2f}) below minimum trade risk (£{self.risk_amount_today():.2f})"
         return True, "ok"
 
     def update_excursion(self, pair: str, current_price: float):

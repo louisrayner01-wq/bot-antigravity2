@@ -194,10 +194,9 @@ class TradingBot:
         self.active_strategies: list = []
 
         mode = "🟡 PAPER FUTURES" if self.paper else "🔴 LIVE FUTURES"
-        self.log.info("%s MODE  |  Account: £%.2f  |  Risk/trade: £%.2f  |  Lev: dynamic (max %dx)",
+        self.log.info("%s MODE  |  Account: £%.2f  |  Risk/trade: HWM×day%%  |  Lev: dynamic (max %dx)",
                       mode,
                       self.cfg["risk"]["initial_capital"],
-                      self.cfg["risk"]["risk_per_trade_abs"],
                       self.cfg["risk"].get("max_leverage", 20))
 
         self.client    = WeexClient(
@@ -965,7 +964,7 @@ class TradingBot:
             signal=signal, confidence=confidence,
             ev=ev, win_rate=win_rate, avg_rr=avg_rr,
             actual_rr=actual_rr, qty=qty,
-            risk_amount=self.risk.risk_per_trade_abs,
+            risk_amount=self.risk.risk_amount_today(),
             ev_reason=ev_reason, verdict=verdict,
             htf_label=htf_lbl, htf_direction=htf_direction,
         )
@@ -1299,9 +1298,8 @@ class TradingBot:
         self.log.info("   Filter TF  : %s (HTF confluence)", self.htf_label)
         self.log.info("   Leverage   : dynamic — auto-set per trade (max %dx)",
                       self.cfg["risk"].get("max_leverage", 20))
-        self.log.info("   Account    : £%.2f  |  Risk/trade: £%.2f",
-                      self.cfg["risk"]["initial_capital"],
-                      self.cfg["risk"]["risk_per_trade_abs"])
+        self.log.info("   Account    : £%.2f  |  Risk/trade: HWM×day%% (Thu=7%% Mon/Wed/Fri=5%% Sat=4%% Tue/Sun=2.5%%)",
+                      self.cfg["risk"]["initial_capital"])
 
         self.startup()
 

@@ -39,14 +39,24 @@ risk:
   # Paper account = £100 equivalent in USDT
   initial_capital:      100.0
 
-  # Risk exactly £5 per trade (absolute amount, not percentage)
-  risk_per_trade_abs:   5.0
+  # ── HWM ratchet: risk is % of high-water mark, sized by day of week ─────────
+  # Position size = HWM × day_risk_pct[day]. HWM only advances on new equity highs.
+  # During drawdowns we keep sizing at peak — the shovel doesn't shrink.
+  # 0=Mon 1=Tue 2=Wed 3=Thu 4=Fri 5=Sat 6=Sun
+  day_risk_pct:
+    0: 0.05    # Monday    — 5%
+    1: 0.025   # Tuesday   — 2.5% (weakest day)
+    2: 0.05    # Wednesday — 5%
+    3: 0.07    # Thursday  — 7% (53-83% WR across all strategies)
+    4: 0.05    # Friday    — 5%
+    5: 0.04    # Saturday  — 4%
+    6: 0.025   # Sunday    — 2.5% (weakest day)
 
   stop_loss_atr_mult:   2.2      # MAE-calibrated from 2221 simulated trades (was 1.5 — too tight)
   take_profit_atr_mult: 3.5      # MAE-calibrated from 2221 simulated trades (was 3.0)
   min_rr_ratio:         1.5      # Reject any trade where actual R/R falls below 1.5
   max_open_positions:   6        # 2 per symbol (one per TF tier) × 3 symbols
-  max_daily_loss_abs:   15.0     # Raised from £10 — accounts for up to 3 simultaneous stop-outs at £5 each
+  max_daily_loss_pct:   0.12     # 12% of current equity — fires after ~2 Thu losses or ~2-3 normal losses
 
   # ── TF-stratified slot tiers ───────────────────────────────────────────────
   # Each symbol gets one position per tier at a time.
