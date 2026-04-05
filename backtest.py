@@ -745,7 +745,15 @@ def run_all(data_dir: str,
         if res:
             all_results.append(res)
 
-    return all_results
+    # Deduplicate — keep first occurrence of each (symbol, timeframe, filter_tf)
+    seen_keys: set = set()
+    deduped: List[Dict] = []
+    for r in all_results:
+        key = (r.get("symbol"), r.get("timeframe"), r.get("filter_tf", ""))
+        if key not in seen_keys:
+            seen_keys.add(key)
+            deduped.append(r)
+    return deduped
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
