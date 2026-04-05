@@ -1376,5 +1376,22 @@ if __name__ == "__main__":
         _log.info("═══ Backtest complete — exiting ═══")
         raise SystemExit(0)
 
+    if os.getenv("PRINT_TEMPORAL", "false").lower() == "true":
+        # ── Temporal report mode ──────────────────────────────────────────────
+        # Set PRINT_TEMPORAL=true on Railway to print day-of-week and monthly
+        # win-rate tables from the saved backtest_results.json, then exit.
+        # Remove the env var to resume normal trading.
+        from assess import analyse_backtest_temporal
+        import yaml as _yaml
+        logging.basicConfig(level=logging.INFO,
+                            format="%(asctime)s  %(levelname)-8s  %(message)s")
+        _cfg      = {}
+        if os.path.exists("config.yaml"):
+            with open("config.yaml") as _f:
+                _cfg = _yaml.safe_load(_f)
+        _data_dir = _cfg.get("data", {}).get("data_dir", "/data")
+        analyse_backtest_temporal(_data_dir)
+        raise SystemExit(0)
+
     bot = TradingBot("config.yaml")
     bot.run()

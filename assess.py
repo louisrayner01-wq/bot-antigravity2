@@ -308,6 +308,114 @@ def cap_assessment(live: dict, skipped: dict):
 
 # ── Section 4: Strategy ranking ──────────────────────────────────────────────
 
+# ── Section 5: Temporal breakdown from saved backtest_results.json ────────────
+
+DOW_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+def _temporal_breakdown(trades: list) -> dict:
+    by_dow   = {d: {"trades": 0, "wins": 0, "pnl": 0.0} for d in DOW_ORDER}
+    by_month: dict = {}
+
+    for t in trades:
+        try:
+            ts = pd.Timestamp(t["entry_ts"])
+        except Exception:
+            continue
+        win = t.get("outcome") == "WIN"
+        pnl = float(t.get("pnl_pct", 0))
+
+        dow = DOW_ORDER[ts.dayofweek]
+        by_dow[dow]["trades"] += 1
+        by_dow[dow]["wins"]   += int(win)
+        by_dow[dow]["pnl"]    += pnl
+
+        month = ts.strftime("%Y-%m")
+        if month not in by_month:
+            by_month[month] = {"trades": 0, "wins": 0, "pnl": 0.0}
+        by_month[month]["trades"] += 1
+        by_month[month]["wins"]   += int(win)
+        by_month[month]["pnl"]    += pnl
+
+    for b in list(by_dow.values()) + list(by_month.values()):
+        n = b["trades"]
+        b["win_rate"] = round(b["wins"] / n, 4) if n else None
+        b["pnl"]      = round(b["pnl"], 4)
+
+    return {"by_dow": by_dow, "by_month": dict(sorted(by_month.items()))}
+
+
+def analyse_backtest_temporal(data_dir: str) -> None:
+    """
+    Section 5 — reads the already-saved backtest_results.json and prints
+    day-of-week and monthly win-rate tables for every strategy.
+    No rerun needed — uses the trade-level data already on disk.
+    """
+    path = os.path.join(data_dir, "backtest_results.json")
+    if not os.path.exists(path):
+        print(f"\n  [!] backtest_results.json not found at {path}")
+        print("      Run backtest.py on Railway first to generate it.")
+        return
+
+    with open(path) as f:
+        data = json.load(f)
+
+    results = data.get("results", [])
+    if not results:
+        print("\n  [!] backtest_results.json contains no results.")
+        return
+
+    print("\n" + "═" * 72)
+    print("  SECTION 5 — BACKTEST TEMPORAL BREAKDOWN")
+    print("  (day-of-week and monthly win rates from saved backtest data)")
+    print("═" * 72)
+
+    for r in sorted(results, key=lambda x: x.get("ev_pct", 0), reverse=True):
+        trades = r.get("trades", [])
+        if not trades:
+            continue
+
+        sym    = r.get("symbol", "?")
+        tf     = r.get("timeframe", "?")
+        ftf    = r.get("filter_tf", "")
+        label  = f"{sym}  {tf}+{ftf}" if ftf else f"{sym}  {tf}"
+        total  = r.get("total_trades", len(trades))
+        ov_wr  = r.get("win_rate", 0) * 100
+
+        # Use pre-computed temporal if present (future runs), otherwise compute now
+        temporal = r.get("temporal") or _temporal_breakdown(trades)
+
+        print(f"\n  ── {label}  (trades: {total}  overall WR: {ov_wr:.1f}%) ──")
+
+        # Day-of-week
+        by_dow = temporal.get("by_dow", {})
+        print(f"\n  {'Day':<6}  {'Trades':>6}  {'Wins':>5}  {'WR%':>6}  {'PnL%':>8}  Bar")
+        print("  " + "─" * 55)
+        for dow in DOW_ORDER:
+            b  = by_dow.get(dow, {})
+            n  = b.get("trades", 0)
+            if n == 0:
+                print(f"  {dow:<6}  {'—':>6}")
+                continue
+            wr   = b.get("win_rate") or 0
+            pnl  = b.get("pnl", 0.0)
+            bar  = "█" * int(wr * 100 / 10) + ("▌" if int(wr * 100) % 10 >= 5 else "")
+            flag = "✅" if wr >= 0.50 else ("⚠️ " if wr >= 0.44 else "❌")
+            print(f"  {dow:<6}  {n:>6}  {b['wins']:>5}  {wr*100:>5.1f}%  {pnl:>+7.2f}%  {flag} {bar}")
+
+        # Monthly
+        by_month = temporal.get("by_month", {})
+        print(f"\n  {'Month':<9}  {'Trades':>6}  {'Wins':>5}  {'WR%':>6}  {'PnL%':>8}")
+        print("  " + "─" * 46)
+        for month, b in by_month.items():
+            n  = b.get("trades", 0)
+            if n == 0:
+                continue
+            wr  = b.get("win_rate") or 0
+            pnl = b.get("pnl", 0.0)
+            flag = "✅" if wr >= 0.50 else ("⚠️ " if wr >= 0.44 else "❌")
+            print(f"  {month:<9}  {n:>6}  {b['wins']:>5}  {wr*100:>5.1f}%  {pnl:>+7.2f}%  {flag}")
+
 def strategy_ranking(live: dict):
     print("\n" + "═" * 72)
     print("  SECTION 4 — STRATEGY RANKING (by live EV%)")
@@ -367,6 +475,8 @@ def main():
     if live_results:
         cap_assessment(live_results, skipped_results)
         strategy_ranking(live_results)
+
+    analyse_backtest_temporal(args.data_dir)
 
     if args.out:
         report = {

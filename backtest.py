@@ -236,6 +236,121 @@ def _simulate(test: pd.DataFrame,
     return trades
 
 
+# ── Temporal breakdown (day-of-week + monthly win rates) ─────────────────────
+
+def _temporal_breakdown(trades: List[Dict]) -> Dict:
+    """
+    Slice a strategy's trade list by day-of-week and calendar month.
+    Returns a dict with 'by_dow' and 'by_month' — both included in the
+    result JSON and printed by print_temporal_report().
+    """
+    if not trades:
+        return {"by_dow": {}, "by_month": {}}
+
+    DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+    by_dow:   Dict[str, Dict] = {d: {"trades": 0, "wins": 0, "pnl": 0.0} for d in DOW}
+    by_month: Dict[str, Dict] = {}
+
+    for t in trades:
+        try:
+            ts = pd.Timestamp(t["entry_ts"])
+        except Exception:
+            continue
+
+        win = t["outcome"] == "WIN"
+        pnl = float(t["pnl_pct"])
+
+        # Day of week
+        dow = DOW[ts.dayofweek]
+        by_dow[dow]["trades"] += 1
+        by_dow[dow]["wins"]   += int(win)
+        by_dow[dow]["pnl"]    += pnl
+
+        # Calendar month  e.g. "2024-03"
+        month = ts.strftime("%Y-%m")
+        if month not in by_month:
+            by_month[month] = {"trades": 0, "wins": 0, "pnl": 0.0}
+        by_month[month]["trades"] += 1
+        by_month[month]["wins"]   += int(win)
+        by_month[month]["pnl"]    += pnl
+
+    # Add win_rate field
+    for bucket in list(by_dow.values()) + list(by_month.values()):
+        n = bucket["trades"]
+        bucket["win_rate"] = round(bucket["wins"] / n, 4) if n else None
+        bucket["pnl"]      = round(bucket["pnl"], 4)
+
+    return {"by_dow": by_dow, "by_month": dict(sorted(by_month.items()))}
+
+
+def print_temporal_report(all_results: List[Dict]) -> None:
+    """
+    Print day-of-week and monthly win-rate tables for every strategy.
+    Reads the 'temporal' key that _summarise() attaches to each result.
+    """
+    DOW_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+    lines = [
+        "",
+        "╔══════════════════════════════════════════════════════════════════════════════════════════════╗",
+        "║                      TEMPORAL BREAKDOWN — win rate by day & month                           ║",
+        "╚══════════════════════════════════════════════════════════════════════════════════════════════╝",
+    ]
+
+    for r in sorted(all_results, key=lambda x: x["ev_pct"], reverse=True):
+        temporal = r.get("temporal", {})
+        if not temporal:
+            continue
+
+        sym   = r["symbol"]
+        tf    = r["timeframe"]
+        ftf   = r.get("filter_tf", "")
+        label = f"{sym}  {tf}+{ftf}" if ftf else f"{sym}  {tf}"
+
+        lines.append("")
+        lines.append(f"  ── {label}  (total trades: {r['total_trades']}, overall WR: {r['win_rate']*100:.1f}%) ──")
+
+        # Day-of-week table
+        by_dow = temporal.get("by_dow", {})
+        if by_dow:
+            lines.append(f"  {'Day':<6}  {'Trades':>6}  {'Wins':>5}  {'WR%':>6}  {'PnL%':>8}  {'Signal':>8}")
+            lines.append("  " + "─" * 48)
+            for dow in DOW_ORDER:
+                b  = by_dow.get(dow, {})
+                n  = b.get("trades", 0)
+                wr = b.get("win_rate")
+                pnl = b.get("pnl", 0.0)
+                if n == 0:
+                    lines.append(f"  {dow:<6}  {'—':>6}")
+                    continue
+                wr_pct  = f"{wr*100:>5.1f}%"
+                bar_val = wr * 100 if wr else 0
+                bar     = "█" * int(bar_val / 10) + ("▌" if bar_val % 10 >= 5 else "")
+                flag    = "✅" if wr and wr >= 0.50 else ("⚠️ " if wr and wr >= 0.44 else "❌")
+                lines.append(f"  {dow:<6}  {n:>6}  {b['wins']:>5}  {wr_pct}  {pnl:>+7.2f}%  {flag} {bar}")
+
+        # Monthly table
+        by_month = temporal.get("by_month", {})
+        if by_month:
+            lines.append("")
+            lines.append(f"  {'Month':<9}  {'Trades':>6}  {'Wins':>5}  {'WR%':>6}  {'PnL%':>8}")
+            lines.append("  " + "─" * 42)
+            for month, b in by_month.items():
+                n   = b.get("trades", 0)
+                wr  = b.get("win_rate")
+                pnl = b.get("pnl", 0.0)
+                if n == 0:
+                    continue
+                wr_pct = f"{wr*100:>5.1f}%" if wr is not None else "  N/A "
+                flag   = "✅" if wr and wr >= 0.50 else ("⚠️ " if wr and wr >= 0.44 else "❌")
+                lines.append(f"  {month:<9}  {n:>6}  {b['wins']:>5}  {wr_pct}  {pnl:>+7.2f}%  {flag}")
+
+    lines.append("")
+    for line in lines:
+        log.info(line)
+
+
 # ── Summarise trade list into result dict ─────────────────────────────────────
 
 def _summarise(trades: List[Dict],
@@ -284,6 +399,7 @@ def _summarise(trades: List[Dict],
         "longest_loss_streak": loss_str,
         "threshold":         round(threshold, 4),
         "trades":            trades,
+        "temporal":          _temporal_breakdown(trades),
     }
 
     tag = f"{filter_tf}→{label}" if filter_tf else label
@@ -658,6 +774,7 @@ def main():
                           args.confidence, args.min_conf_gain)
 
     print_report(all_results)
+    print_temporal_report(all_results)
 
     # Save full results (with per-trade detail) to /data
     out_path = os.path.join(data_dir, "backtest_results.json")
