@@ -42,6 +42,7 @@ import os
 import json
 import logging
 import argparse
+from datetime import datetime, timezone, timedelta
 import numpy as np
 import pandas as pd
 import yaml
@@ -58,6 +59,35 @@ from sklearn.preprocessing import StandardScaler
 from indicators import compute_features, FEATURE_COLS
 from data_collector import TF_LABELS, TIMEFRAMES, SYMBOLS
 from analysis import compute_adaptive_threshold, label_candles
+
+# ── News blackout helpers ─────────────────────────────────────────────────────
+_NEWS_ENTRY_BLOCK_MINUTES = 60
+_NEWS_RESTORE_MINUTES     = 5
+
+def _build_news_windows() -> List[Tuple]:
+    """
+    Pre-compute (window_start, window_end) UTC datetime pairs from the
+    static news calendar. Entries within these windows are blocked.
+    """
+    from news_calendar import EVENTS as _EVENTS
+    windows = []
+    for _label, ts_str in _EVENTS:
+        event_dt = datetime.strptime(ts_str, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+        windows.append((
+            event_dt - timedelta(minutes=_NEWS_ENTRY_BLOCK_MINUTES),
+            event_dt + timedelta(minutes=_NEWS_RESTORE_MINUTES),
+        ))
+    return windows
+
+def _in_news_blackout(ts: pd.Timestamp, windows: List[Tuple]) -> bool:
+    """Return True if ts falls inside any news blackout window."""
+    if not windows:
+        return False
+    ts_utc = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+    for start, end in windows:
+        if start <= ts_utc < end:
+            return True
+    return False
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
 log = logging.getLogger("backtest")
@@ -154,23 +184,28 @@ def _simulate(test: pd.DataFrame,
               sl_mult: float,
               tp_mult: float,
               min_confidence: float,
-              htf_trend: Optional[pd.Series] = None) -> List[Dict]:
+              htf_trend: Optional[pd.Series] = None,
+              slot_key: str = "",
+              day_blocks: Optional[Dict] = None,
+              thursday_min_conf: Optional[float] = None,
+              news_windows: Optional[List] = None) -> List[Dict]:
     """
-    Simulate trades on the test split.
-
-    htf_trend — optional Series (integer-indexed, same length as test) giving
-                the higher-TF trend (+1 bullish / -1 bearish / 0 neutral) at
-                each test candle. When provided, only signals that agree with
-                the trend are taken.
+    Simulate trades on the test split, applying the same rules as the live bot:
+      - Day-of-week slot blocks
+      - Thursday confidence threshold lowering
+      - News calendar entry blocking
+      - MFE (max favorable excursion) tracking per trade
+      - Entry hour saved for time-of-day analysis
     """
     buy_idx  = classes.index(BUY)  if BUY  in classes else None
     sell_idx = classes.index(SELL) if SELL in classes else None
 
     trades: List[Dict] = []
-    in_trade   = False
-    direction  = 0
-    entry_price = sl = tp = 0.0
-    entry_ts   = None
+    in_trade    = False
+    direction   = 0
+    entry_price = sl = tp = sl_pct = 0.0
+    entry_ts    = None
+    max_fav     = 0.0  # MFE tracker
 
     for i in range(len(test)):
         row   = test.iloc[i]
@@ -180,8 +215,14 @@ def _simulate(test: pd.DataFrame,
         atr   = row["atr_14"]
         ts    = row["timestamp"]
 
-        # ── Exit: check SL/TP on this candle ─────────────────────────────────
+        # ── Exit: check SL/TP on this candle + track MFE ─────────────────────
         if in_trade:
+            if direction == BUY:
+                fav = (high - entry_price) / entry_price
+            else:
+                fav = (entry_price - low) / entry_price
+            max_fav = max(max_fav, fav)
+
             hit_sl = (direction == BUY  and low  <= sl) or \
                      (direction == SELL and high >= sl)
             hit_tp = (direction == BUY  and high >= tp) or \
@@ -190,6 +231,7 @@ def _simulate(test: pd.DataFrame,
             if hit_tp or hit_sl:
                 exit_price = tp if hit_tp else sl
                 pnl_pct    = (exit_price - entry_price) / entry_price * direction * 100
+                ts_entry   = pd.Timestamp(entry_ts)
                 trades.append({
                     "entry_ts":    str(entry_ts),
                     "exit_ts":     str(ts),
@@ -198,20 +240,42 @@ def _simulate(test: pd.DataFrame,
                     "exit_price":  round(exit_price, 6),
                     "sl":          round(sl, 6),
                     "tp":          round(tp, 6),
+                    "sl_pct":      round(sl_pct, 6),
                     "pnl_pct":     round(pnl_pct, 4),
                     "outcome":     "WIN" if hit_tp else "LOSS",
+                    "mfe_pct":     round(max_fav * 100, 4),
+                    "entry_hour":  ts_entry.hour,
+                    "entry_dow":   ts_entry.dayofweek,
                 })
                 in_trade = False
+                max_fav  = 0.0
 
         # ── Entry: model confidence + optional HTF gate ───────────────────────
         if not in_trade:
+            ts_pd = pd.Timestamp(ts)
+
+            # Day-of-week block
+            if day_blocks and slot_key:
+                dow_blocks = day_blocks.get(ts_pd.dayofweek, [])
+                if slot_key in dow_blocks:
+                    continue
+
+            # News calendar block
+            if news_windows and _in_news_blackout(ts_pd, news_windows):
+                continue
+
+            # Thursday confidence threshold
+            is_thu   = (ts_pd.dayofweek == 3)
+            conf_thr = thursday_min_conf if (is_thu and thursday_min_conf is not None) \
+                       else min_confidence
+
             prob      = probas[i]
             buy_conf  = prob[buy_idx]  if buy_idx  is not None else 0.0
             sell_conf = prob[sell_idx] if sell_idx is not None else 0.0
 
-            if buy_conf >= min_confidence and buy_conf >= sell_conf:
+            if buy_conf >= conf_thr and buy_conf >= sell_conf:
                 sig = BUY
-            elif sell_conf >= min_confidence and sell_conf > buy_conf:
+            elif sell_conf >= conf_thr and sell_conf > buy_conf:
                 sig = SELL
             else:
                 continue
@@ -227,11 +291,13 @@ def _simulate(test: pd.DataFrame,
             direction   = sig
             entry_price = close
             entry_ts    = ts
+            sl_pct      = (atr * sl_mult) / entry_price
             sl = entry_price - atr * sl_mult if direction == BUY \
                  else entry_price + atr * sl_mult
             tp = entry_price + atr * tp_mult if direction == BUY \
                  else entry_price - atr * tp_mult
             in_trade = True
+            max_fav  = 0.0
 
     return trades
 
@@ -240,17 +306,17 @@ def _simulate(test: pd.DataFrame,
 
 def _temporal_breakdown(trades: List[Dict]) -> Dict:
     """
-    Slice a strategy's trade list by day-of-week and calendar month.
-    Returns a dict with 'by_dow' and 'by_month' — both included in the
-    result JSON and printed by print_temporal_report().
+    Slice a strategy's trade list by day-of-week, calendar month, and hour-of-day.
+    Returns a dict with 'by_dow', 'by_month', and 'by_hour'.
     """
     if not trades:
-        return {"by_dow": {}, "by_month": {}}
+        return {"by_dow": {}, "by_month": {}, "by_hour": {}}
 
     DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
     by_dow:   Dict[str, Dict] = {d: {"trades": 0, "wins": 0, "pnl": 0.0} for d in DOW}
     by_month: Dict[str, Dict] = {}
+    by_hour:  Dict[str, Dict] = {}
 
     for t in trades:
         try:
@@ -267,7 +333,7 @@ def _temporal_breakdown(trades: List[Dict]) -> Dict:
         by_dow[dow]["wins"]   += int(win)
         by_dow[dow]["pnl"]    += pnl
 
-        # Calendar month  e.g. "2024-03"
+        # Calendar month e.g. "2024-03"
         month = ts.strftime("%Y-%m")
         if month not in by_month:
             by_month[month] = {"trades": 0, "wins": 0, "pnl": 0.0}
@@ -275,13 +341,25 @@ def _temporal_breakdown(trades: List[Dict]) -> Dict:
         by_month[month]["wins"]   += int(win)
         by_month[month]["pnl"]    += pnl
 
+        # Hour of day UTC e.g. "08", "13"
+        hour = ts.strftime("%H:00")
+        if hour not in by_hour:
+            by_hour[hour] = {"trades": 0, "wins": 0, "pnl": 0.0}
+        by_hour[hour]["trades"] += 1
+        by_hour[hour]["wins"]   += int(win)
+        by_hour[hour]["pnl"]    += pnl
+
     # Add win_rate field
-    for bucket in list(by_dow.values()) + list(by_month.values()):
+    for bucket in list(by_dow.values()) + list(by_month.values()) + list(by_hour.values()):
         n = bucket["trades"]
         bucket["win_rate"] = round(bucket["wins"] / n, 4) if n else None
         bucket["pnl"]      = round(bucket["pnl"], 4)
 
-    return {"by_dow": by_dow, "by_month": dict(sorted(by_month.items()))}
+    return {
+        "by_dow":   by_dow,
+        "by_month": dict(sorted(by_month.items())),
+        "by_hour":  dict(sorted(by_hour.items())),
+    }
 
 
 def print_temporal_report(all_results: List[Dict]) -> None:
@@ -353,6 +431,47 @@ def print_temporal_report(all_results: List[Dict]) -> None:
 
 # ── Summarise trade list into result dict ─────────────────────────────────────
 
+def _hwm_compounded_pnl(trades: List[Dict], initial: float = 100.0) -> Dict:
+    """
+    Simulate HWM ratchet + day-of-week % sizing on backtest trades.
+    Returns final equity, max drawdown, and compounded total PnL %.
+    Day risk %: Thu=7%, Mon/Wed/Fri=5%, Sat=4%, Tue/Sun=2.5%
+    """
+    DAY_RISK = {0: 0.05, 1: 0.025, 2: 0.05, 3: 0.07,
+                4: 0.05, 5: 0.04,  6: 0.025}
+    equity = initial
+    hwm    = initial
+    peak   = initial
+    max_dd = 0.0
+
+    for t in trades:
+        try:
+            dow = pd.Timestamp(t["entry_ts"]).dayofweek
+        except Exception:
+            dow = 0
+        risk_pct  = DAY_RISK.get(dow, 0.05)
+        risk_amt  = hwm * risk_pct             # HWM-based risk in £
+        sl_pct    = abs(float(t.get("sl_pct", 0.022)))  # fallback 2.2% ATR approx
+        if sl_pct <= 0:
+            sl_pct = 0.022
+        qty_notional = risk_amt / sl_pct       # notional position size
+        pnl_pct      = float(t["pnl_pct"]) / 100.0
+        pnl_abs      = qty_notional * pnl_pct
+        equity       = max(equity + pnl_abs, 0.0)
+        if equity > hwm:
+            hwm = equity
+        if equity > peak:
+            peak = equity
+        dd = (peak - equity) / peak
+        max_dd = max(max_dd, dd)
+
+    return {
+        "compounded_final_equity": round(equity, 2),
+        "compounded_pnl_pct":      round((equity - initial) / initial * 100, 2),
+        "compounded_max_dd_pct":   round(-max_dd * 100, 2),
+    }
+
+
 def _summarise(trades: List[Dict],
                symbol: str,
                label: str,
@@ -377,6 +496,7 @@ def _summarise(trades: List[Dict],
     avg_rr    = abs(avg_win / avg_loss) if avg_loss != 0 else 0.0
     max_dd    = _max_drawdown(pnls)
     win_str, loss_str = _streaks(outcomes)
+    hwm_stats = _hwm_compounded_pnl(trades)
 
     result = {
         "symbol":            symbol,
@@ -398,6 +518,7 @@ def _summarise(trades: List[Dict],
         "longest_win_streak":  win_str,
         "longest_loss_streak": loss_str,
         "threshold":         round(threshold, 4),
+        "compounded":        hwm_stats,
         "trades":            trades,
         "temporal":          _temporal_breakdown(trades),
     }
@@ -486,7 +607,11 @@ def backtest_single(df_raw: pd.DataFrame,
                     sl_mult: float,
                     tp_mult: float,
                     min_confidence: float = 0.55,
-                    models_dir: Optional[str] = None) -> Optional[Dict]:
+                    models_dir: Optional[str] = None,
+                    slot_key: str = "",
+                    day_blocks: Optional[Dict] = None,
+                    thursday_min_conf: Optional[float] = None,
+                    news_windows: Optional[List] = None) -> Optional[Dict]:
     """Single-timeframe walk-forward backtest."""
     result = _train(df_raw, symbol, tf_label, models_dir=models_dir)
     if result is None:
@@ -494,7 +619,9 @@ def backtest_single(df_raw: pd.DataFrame,
     scaler, model, classes, feats, train, test, threshold = result
 
     probas = model.predict_proba(scaler.transform(test[feats].fillna(0).values))
-    trades = _simulate(test, probas, classes, sl_mult, tp_mult, min_confidence)
+    trades = _simulate(test, probas, classes, sl_mult, tp_mult, min_confidence,
+                       slot_key=slot_key, day_blocks=day_blocks,
+                       thursday_min_conf=thursday_min_conf, news_windows=news_windows)
 
     return _summarise(trades, symbol, tf_label,
                       len(train), len(test), threshold, "single")
@@ -508,7 +635,11 @@ def backtest_confluence(df_entry: pd.DataFrame,
                         sl_mult: float,
                         tp_mult: float,
                         min_confidence: float = 0.55,
-                        models_dir: Optional[str] = None) -> Optional[Dict]:
+                        models_dir: Optional[str] = None,
+                        slot_key: str = "",
+                        day_blocks: Optional[Dict] = None,
+                        thursday_min_conf: Optional[float] = None,
+                        news_windows: Optional[List] = None) -> Optional[Dict]:
     """
     Confluence backtest: model trained on entry_tf, entries gated by
     filter_tf EMA21 trend agreement.
@@ -521,7 +652,9 @@ def backtest_confluence(df_entry: pd.DataFrame,
     probas    = model.predict_proba(scaler.transform(test[feats].fillna(0).values))
     htf_trend = _htf_trend_series(df_filter, test["timestamp"])
     trades    = _simulate(test, probas, classes, sl_mult, tp_mult,
-                          min_confidence, htf_trend=htf_trend)
+                          min_confidence, htf_trend=htf_trend,
+                          slot_key=slot_key, day_blocks=day_blocks,
+                          thursday_min_conf=thursday_min_conf, news_windows=news_windows)
 
     return _summarise(trades, symbol, entry_tf,
                       len(train), len(test), threshold,
@@ -536,7 +669,11 @@ def backtest_mtf(df_entry: pd.DataFrame,
                  sl_mult: float,
                  tp_mult: float,
                  min_confidence: float = 0.55,
-                 models_dir: Optional[str] = None) -> Optional[Dict]:
+                 models_dir: Optional[str] = None,
+                 slot_key: str = "",
+                 day_blocks: Optional[Dict] = None,
+                 thursday_min_conf: Optional[float] = None,
+                 news_windows: Optional[List] = None) -> Optional[Dict]:
     """
     MTF backtest: model trained on entry_tf, entries gated by direction_tf
     EMA21 trend (same gate as confluence — direction_tf provides trend bias).
@@ -549,7 +686,9 @@ def backtest_mtf(df_entry: pd.DataFrame,
     probas    = model.predict_proba(scaler.transform(test[feats].fillna(0).values))
     htf_trend = _htf_trend_series(df_direction, test["timestamp"])
     trades    = _simulate(test, probas, classes, sl_mult, tp_mult,
-                          min_confidence, htf_trend=htf_trend)
+                          min_confidence, htf_trend=htf_trend,
+                          slot_key=slot_key, day_blocks=day_blocks,
+                          thursday_min_conf=thursday_min_conf, news_windows=news_windows)
 
     return _summarise(trades, symbol, entry_tf,
                       len(train), len(test), threshold,
@@ -654,6 +793,15 @@ def run_all(data_dir: str,
     analysis = load_analysis(data_dir)
     all_results: List[Dict] = []
 
+    # ── Load live bot rules from config ───────────────────────────────────────
+    cfg         = load_config()
+    sc          = cfg.get("strategy", {})
+    day_blocks_raw = sc.get("day_blocks", {})
+    # Config keys are ints (YAML), convert to int just in case
+    day_blocks  = {int(k): v for k, v in day_blocks_raw.items()}
+    thursday_min_conf = sc.get("thursday_buy_threshold", None)
+    news_windows = _build_news_windows()
+
     # Cache loaded CSVs to avoid re-reading the same file multiple times
     _csv_cache: Dict[str, pd.DataFrame] = {}
 
@@ -685,7 +833,11 @@ def run_all(data_dir: str,
         if df is None:
             continue
         log.info("  %s %s  (%d candles)", symbol, tf_lbl, len(df))
-        res = backtest_single(df, symbol, tf_lbl, sl_mult, tp_mult, min_confidence, models_dir=models_dir)
+        slot_key = f"{symbol}_{tf_lbl}"
+        res = backtest_single(df, symbol, tf_lbl, sl_mult, tp_mult, min_confidence,
+                              models_dir=models_dir, slot_key=slot_key,
+                              day_blocks=day_blocks, thursday_min_conf=thursday_min_conf,
+                              news_windows=news_windows)
         if res:
             all_results.append(res)
 
@@ -710,10 +862,13 @@ def run_all(data_dir: str,
         log.info("  %s %s+%s  (gain=%.3f  cov=%.0f%%)",
                  symbol, entry_tf, filter_tf,
                  c.get("accuracy_gain", 0), c.get("coverage", 0) * 100)
+        slot_key = f"{symbol}_{entry_tf}+{filter_tf}"
         res = backtest_confluence(df_entry, df_filter, symbol,
                                   entry_tf, filter_tf,
                                   sl_mult, tp_mult, min_confidence,
-                                  models_dir=models_dir)
+                                  models_dir=models_dir, slot_key=slot_key,
+                                  day_blocks=day_blocks, thursday_min_conf=thursday_min_conf,
+                                  news_windows=news_windows)
         if res:
             all_results.append(res)
 
@@ -738,10 +893,13 @@ def run_all(data_dir: str,
         log.info("  %s %s→%s  (cv=%.3f  gain=%+.3f)",
                  symbol, direction_tf, entry_tf,
                  s.get("cv_accuracy", 0), s.get("accuracy_gain", 0))
+        slot_key = f"{symbol}_{entry_tf}+{direction_tf}"
         res = backtest_mtf(df_entry, df_direction, symbol,
                            entry_tf, direction_tf,
                            sl_mult, tp_mult, min_confidence,
-                           models_dir=models_dir)
+                           models_dir=models_dir, slot_key=slot_key,
+                           day_blocks=day_blocks, thursday_min_conf=thursday_min_conf,
+                           news_windows=news_windows)
         if res:
             all_results.append(res)
 

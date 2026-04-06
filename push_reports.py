@@ -80,7 +80,7 @@ def build_backtest_summary(results: list) -> str:
         "# Backtest Summary",
         f"_Generated: {now}_",
         "",
-        "## Strategy Results",
+        "## Strategy Results (flat sizing)",
         "",
         "| Symbol | Strategy | Trades | WR% | Avg Win | Avg Loss | R/R | EV% | Total PnL | Max DD |",
         "|--------|----------|--------|-----|---------|----------|-----|-----|-----------|--------|",
@@ -103,6 +103,31 @@ def build_backtest_summary(results: list) -> str:
             f"| {sym} | {strat} | {trades} | {wr*100:.1f}% {_flag(wr)} | "
             f"{avgw:+.2f}% | {avgl:+.2f}% | {rr:.2f} | {ev:+.3f}% | "
             f"{pnl:+.2f}% | {dd:+.2f}% |"
+        )
+
+    lines += [
+        "",
+        "## Strategy Results (HWM compounded sizing)",
+        "_Simulates HWM ratchet + day-of-week % risk on £100 starting equity_",
+        "",
+        "| Symbol | Strategy | Trades | WR% | Final Equity | Compounded PnL | Max DD |",
+        "|--------|----------|--------|-----|-------------|----------------|--------|",
+    ]
+
+    for r in sorted(results, key=lambda x: x.get("ev_pct", 0), reverse=True):
+        sym    = r.get("symbol", "?")
+        tf     = r.get("timeframe", "?")
+        ftf    = r.get("filter_tf", "")
+        strat  = f"{tf}+{ftf}" if ftf else tf
+        trades = r.get("total_trades", 0)
+        wr     = r.get("win_rate", 0)
+        comp   = r.get("compounded", {})
+        feq    = comp.get("compounded_final_equity", 0)
+        cpnl   = comp.get("compounded_pnl_pct", 0)
+        cdd    = comp.get("compounded_max_dd_pct", 0)
+        lines.append(
+            f"| {sym} | {strat} | {trades} | {wr*100:.1f}% {_flag(wr)} | "
+            f"£{feq:.2f} | {cpnl:+.2f}% | {cdd:.2f}% |"
         )
 
     return "\n".join(lines) + "\n"
@@ -169,6 +194,24 @@ def build_temporal_breakdown(results: list) -> str:
             lines.append(
                 f"| {month} | {n} | {b['wins']} | {wr*100:.1f}% {_flag(wr)} | {pnl:+.2f}% |"
             )
+
+        by_hour = temporal.get("by_hour", {})
+        if by_hour:
+            lines += [
+                "",
+                "### Hour of Day (UTC)",
+                "| Hour | Trades | Wins | WR% | PnL% |",
+                "|------|--------|------|-----|------|",
+            ]
+            for hour, b in sorted(by_hour.items()):
+                n  = b.get("trades", 0)
+                if n == 0:
+                    continue
+                wr  = b.get("win_rate") or 0
+                pnl = b.get("pnl", 0.0)
+                lines.append(
+                    f"| {hour} | {n} | {b['wins']} | {wr*100:.1f}% {_flag(wr)} | {pnl:+.2f}% |"
+                )
 
         lines.append("")
 
