@@ -76,6 +76,14 @@ class RiskManager:
                             4: 0.05, 5: 0.04,  6: 0.025}
         self.day_risk_pct: dict = rc.get("day_risk_pct", default_day_risk)
 
+        # ── Hour-of-day risk multiplier (applied on top of day_risk_pct) ───────
+        sc = cfg.get("strategy", {})
+        raw_mult = sc.get("hour_risk_mult", {})
+        self.hour_risk_mult: dict = {int(k): float(v) for k, v in raw_mult.items()}
+
+        # ── Blocked hours UTC ──────────────────────────────────────────────────
+        self.blocked_hours_utc: list = sc.get("blocked_hours_utc", [])
+
         self.equity             = float(self.initial_capital)
         self.hwm                = float(self.initial_capital)  # high-water mark
         self.day_start_equity   = float(self.initial_capital)
@@ -95,10 +103,13 @@ class RiskManager:
         During drawdowns we size as if still at peak — accelerating recovery.
         Size only grows when equity sets a new all-time high.
         Day-of-week % applied: Thu=7%, Mon/Wed/Fri=5%, Sat=4%, Tue/Sun=2.5%.
+        Hour-of-day multiplier applied on top: 12-15 UTC boosted, others neutral.
         """
-        dow = datetime.now(timezone.utc).weekday()
+        now = datetime.now(timezone.utc)
+        dow = now.weekday()
         pct = self.day_risk_pct.get(dow, 0.05)
-        return round(self.hwm * pct, 4)
+        hour_mult = self.hour_risk_mult.get(now.hour, 1.0)
+        return round(self.hwm * pct * hour_mult, 4)
 
     def update_equity(self, new_equity: float):
         today = date.today()

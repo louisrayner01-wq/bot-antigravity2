@@ -55,8 +55,8 @@ risk:
   stop_loss_atr_mult:   2.2      # MAE-calibrated from 2221 simulated trades (was 1.5 — too tight)
   take_profit_atr_mult: 3.5      # MAE-calibrated from 2221 simulated trades (was 3.0)
   min_rr_ratio:         1.5      # Reject any trade where actual R/R falls below 1.5
-  max_open_positions:   6        # 2 per symbol (one per TF tier) × 3 symbols
-  max_daily_loss_pct:   0.12     # 12% of current equity — fires after ~2 Thu losses or ~2-3 normal losses
+  max_open_positions:   5        # Tier 1 strategies only — reduces correlated crash exposure
+  max_daily_loss_pct:   0.10     # 10% of current equity — tighter cap for real money protection
 
   # ── TF-stratified slot tiers ───────────────────────────────────────────────
   # Each symbol gets one position per tier at a time.
@@ -87,30 +87,72 @@ strategy:
   min_ev_trades:    10     # Minimum trades before EV gate is enforced
   min_strategy_accuracy: 0.52  # Min CV accuracy for a (symbol, TF) strategy to be traded
 
-  # Strategies proven unprofitable in backtest — blocked regardless of cv_accuracy.
+  # Strategies proven unprofitable or weak in backtest — blocked regardless of cv_accuracy.
   # Format: "{SYMBOL}_{TF}"  e.g. "BTCUSDT_UMCBL_4h"
   blocked_slots:
-    - "BTCUSDT_UMCBL_4h"   # EV +0.098% but only +4.5% over 2yr, MaxDD -33%
-    - "BTCUSDT_UMCBL_1d"   # EV -6.19%, PnL -49.5%
-    - "ETHUSDT_UMCBL_4h"   # EV -0.443%, PnL -19.5%
-    - "ETHUSDT_UMCBL_1d"   # EV -11.72%, PnL -35.2%
-    - "SOLUSDT_UMCBL_4h"   # EV -1.37%, PnL -50.8%
-    - "SOLUSDT_UMCBL_1d"   # EV -6.19%, PnL -31.0%
-    - "SOLUSDT_UMCBL_1h+4h"  # MaxDD -25.4%, 4 of 8 months losing — replaced by SOL 1h+1d
-    - "ETHUSDT_UMCBL_1h+4h"  # Weak monthly consistency — replaced by ETH 1h+1d
+    # ── Single-TF (always blocked) ─────────────────────────────────────────────
+    - "BTCUSDT_UMCBL_4h"       # EV +0.098% but only +4.5% over 2yr, MaxDD -33%
+    - "BTCUSDT_UMCBL_1d"       # EV -6.19%, PnL -49.5%
+    - "ETHUSDT_UMCBL_4h"       # EV -0.443%, PnL -19.5%
+    - "ETHUSDT_UMCBL_1d"       # EV -11.72%, PnL -35.2%
+    - "SOLUSDT_UMCBL_4h"       # EV -1.37%, PnL -50.8%
+    - "SOLUSDT_UMCBL_1d"       # EV -6.19%, PnL -31.0%
+    # ── Weak 1h confluence strategies ─────────────────────────────────────────
+    - "SOLUSDT_UMCBL_1h+4h"    # MaxDD -18.6%, 45.1% WR, terrible Tue/Wed — replaced by SOL 1h+1d
+    - "ETHUSDT_UMCBL_1h+4h"    # Weak monthly consistency — replaced by ETH 1h+1d
+    - "BTCUSDT_UMCBL_1h+4h"    # 45.6% WR, MaxDD -25.7%, weak Mon/Tue
+    # ── Weak 15m confluence strategies ────────────────────────────────────────
+    - "SOLUSDT_UMCBL_15m+4h"   # 46.6% WR, MaxDD -14.8%, weak Mon/Fri
+    - "SOLUSDT_UMCBL_15m+1h"   # 42.3% WR ❌, MaxDD -15.2%
+    - "ETHUSDT_UMCBL_15m+1h"   # 44.2% WR, MaxDD -16.6%
+    - "BTCUSDT_UMCBL_15m+1h"   # 44.9% WR, MaxDD -9.0% — marginal, dropped for cleaner slots
+    # ── All 5m strategies ─────────────────────────────────────────────────────
+    - "SOLUSDT_UMCBL_5m+4h"    # High frequency, low EV, noisy signals
+    - "SOLUSDT_UMCBL_5m+1h"    # High frequency, low EV
+    - "SOLUSDT_UMCBL_5m+1d"    # High frequency, low EV
+    - "BTCUSDT_UMCBL_5m+4h"    # High frequency, low EV
+    - "BTCUSDT_UMCBL_5m+1h"    # High frequency, low EV
+    - "BTCUSDT_UMCBL_5m+1d"    # High frequency, low EV
+    - "ETHUSDT_UMCBL_5m+4h"    # High frequency, low EV
+    - "ETHUSDT_UMCBL_5m+1h"    # High frequency, low EV
+    - "ETHUSDT_UMCBL_5m+1d"    # High frequency, low EV
+
+  # ── Time-of-day entry gates ───────────────────────────────────────────────
+  # Block new entries during consistently weak UTC hours (across all strategies).
+  # 03:00 — worst single hour, 8/12 strategies below 45% WR
+  # 10:00 — surprisingly weak across most strategies
+  # 21:00 — 9/12 strategies below 50% WR
+  blocked_hours_utc: [3, 10, 21]
+
+  # ── Time-of-day risk multipliers ──────────────────────────────────────────
+  # Applied on top of day_risk_pct. 12:00-15:00 UTC is the golden window.
+  # 14:00 UTC is the single strongest hour across nearly every strategy.
+  # Format: hour (UTC) → multiplier
+  hour_risk_mult:
+    12: 1.3   # London midday — strong across all strategies
+    13: 1.3   # NY pre-open
+    14: 1.5   # Single best hour overall
+    15: 1.3   # NY open
 
   # ── Day-of-week slot blocks ────────────────────────────────────────────────
   # Slots listed here will not enter new trades on the specified days.
   # Days: 0=Mon 1=Tue 2=Wed 3=Thu 4=Fri 5=Sat 6=Sun
   day_blocks:
-    1:  # Tuesday — block 1h strategies with poor Tuesday edge
-      - "BTCUSDT_UMCBL_1h+1d"   # 38.5% WR, -1.07% PnL on Tuesdays
+    1:  # Tuesday — block strategies with poor Tuesday edge
+      - "BTCUSDT_UMCBL_1h+1d"   # 37.0% WR on Tuesdays
       - "ETHUSDT_UMCBL_1h+1d"   # 43.8% WR on Tuesdays
-      - "SOLUSDT_UMCBL_1h+1d"   # 42.9% WR on Tuesdays
-    6:  # Sunday — block 1h strategies that hover near zero PnL
-      - "SOLUSDT_UMCBL_1h+1d"   # 42.9% WR, +0.03% PnL on Sundays
-      - "ETHUSDT_UMCBL_1h+1d"   # 45.5% WR, +0.24% PnL on Sundays
-      - "ETHUSDT_UMCBL_1h+4h"   # blocked entirely above — redundant but explicit
+      - "SOLUSDT_UMCBL_1h+1d"   # 35.0% WR on Tuesdays
+    6:  # Sunday — block strategies with poor Sunday edge
+      - "SOLUSDT_UMCBL_1h+1d"   # 42.9% WR on Sundays
+      - "ETHUSDT_UMCBL_1h+1d"   # 47.6% WR on Sundays
+
+  # ── Monthly withdrawal rule ────────────────────────────────────────────────
+  # At end of each month: withdraw 50% of net profit above starting capital floor.
+  # Floor = initial_capital. Never withdraw below the floor.
+  # Example: account at £620, floor £500 → profit £120 → withdraw £60, keep £60.
+  # After withdrawal, HWM resets to new equity on next redeploy.
+  withdrawal_floor:     500.0   # Never withdraw below this (update when going live)
+  withdrawal_pct:       0.50    # Withdraw 50% of profit above floor each month
 
   # ── Thursday confidence boost ──────────────────────────────────────────────
   # On Thursdays, accept signals with lower model confidence (0.50 vs 0.55)

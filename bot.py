@@ -908,6 +908,13 @@ class TradingBot:
         if not slot_key:
             slot_key = symbol
 
+        # ── Time-of-day gate ─────────────────────────────────────────────────
+        current_hour = utcnow().hour
+        if current_hour in self.risk.blocked_hours_utc:
+            self.log.info("  ⛔ %s[%s]  entries blocked — weak hour %02d:00 UTC",
+                          symbol, timeframe_label, current_hour)
+            return False
+
         # ── News calendar gate ───────────────────────────────────────────────
         blocked_event = entries_blocked(utcnow())
         if blocked_event:
