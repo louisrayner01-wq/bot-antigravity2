@@ -215,6 +215,42 @@ class TradingBot:
         # (breakeven moves are NOT stored here — they stay at breakeven after)
         self._news_tightened_sl: Dict[str, float] = {}
 
+    # ── Dashboard state ───────────────────────────────────────────────────────
+
+    def _write_state(self) -> None:
+        """Write current bot state to /data/state.json for the dashboard."""
+        try:
+            positions = {}
+            for slot_key, pos in self.risk.open_positions.items():
+                positions[slot_key] = {
+                    "symbol":     pos.pair,
+                    "tf":         slot_key.split("_")[-1] if "_" in slot_key else self.tf,
+                    "side":       pos.side,
+                    "entry_price": pos.entry_price,
+                    "sl":         pos.stop_loss,
+                    "tp":         pos.take_profit,
+                    "tp1_price":  pos.tp1_price,
+                    "tp1_hit":    pos.tp1_hit,
+                    "qty":        pos.quantity,
+                    "qty_original": pos.quantity_original,
+                    "leverage":   pos.leverage,
+                    "entry_time": pos.entry_time,
+                }
+            state = {
+                "updated_at":      utcnow().isoformat(),
+                "paper":           self.paper,
+                "equity":          round(self.risk.equity, 4),
+                "hwm":             round(self.risk.hwm, 4),
+                "initial_capital": self.risk.initial_capital,
+                "max_open":        self.risk.max_open,
+                "positions":       positions,
+            }
+            state_path = os.path.join(self.data_dir, "state.json")
+            with open(state_path, "w") as f:
+                json.dump(state, f, indent=2)
+        except Exception as exc:
+            self.log.debug("Could not write state.json: %s", exc)
+
     # ── Data ──────────────────────────────────────────────────────────────────
 
     def fetch_candles(self, symbol: str,
@@ -1417,6 +1453,7 @@ class TradingBot:
                 # 1. Always check SL / TP / TP1 / LTF reversal + accumulate data
                 self.monitor_exits()
                 self.accumulate_data()
+                self._write_state()
                 monitor_cycle += 1
 
                 # Log data store sizes every hour (12 × 5-min cycles)
