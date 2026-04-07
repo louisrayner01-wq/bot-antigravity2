@@ -351,11 +351,16 @@ class DataCollector:
         Fetch the most recent batch of candles (no endTime — used for
         appending new candles to an existing CSV).
 
-        Tries progressively smaller limits until one succeeds.
+        Uses the contract API (_UMCBL) which is more reliable than the spot
+        API for live candle fetches. Tries progressively smaller limits until
+        one succeeds.
         """
+        # Route through contract API — more reliable than spot for live fetches.
+        # _filepath() strips the suffix so CSVs stay named BTCUSDT_5m.csv etc.
+        futures_symbol = symbol if "_UMCBL" in symbol else symbol + "_UMCBL"
         for limit in [BATCH_SIZE, 100, 50]:
             batch = self.client.get_candles(
-                symbol      = symbol,
+                symbol      = futures_symbol,
                 granularity = timeframe_min,
                 limit       = limit,
             )
