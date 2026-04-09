@@ -52,9 +52,21 @@ def get_trades():
 # ── JavaScript (served separately so template literals work without escaping) ──
 
 JS = r"""
+var _rawState  = null;
+var _rawTrades = [];
+var _scaleFactor = 1.0;
+
+function getScaleFactor() {
+  var sel = document.getElementById("acct-select");
+  if (!sel || !_rawState) return 1.0;
+  var selectedCap = parseFloat(sel.value);
+  var actualCap   = parseFloat(_rawState.initial_capital) || 100;
+  return selectedCap / actualCap;
+}
+
 function fmt(val, decimals) {
   var d = (decimals === undefined) ? 2 : decimals;
-  return (val !== null && val !== undefined && val !== "") ? parseFloat(val).toFixed(d) : "—";
+  return (val !== null && val !== undefined && val !== "") ? parseFloat(val).toFixed(d) : "\u2014";
 }
 
 function pnlClass(val) {
@@ -78,7 +90,7 @@ function tfFromSlot(slot) {
 }
 
 function formatDate(iso) {
-  if (!iso) return "—";
+  if (!iso) return "\u2014";
   var d = new Date(iso);
   return d.toLocaleDateString("en-GB", {day:"2-digit", month:"short"})
        + " " + d.toLocaleTimeString("en-GB", {hour:"2-digit", minute:"2-digit"});
@@ -86,49 +98,113 @@ function formatDate(iso) {
 
 function el(id) { return document.getElementById(id); }
 
-function posCard(slot, p) {
+function posCard(slot, p, sf) {
   var sym      = shortPair(p.symbol || slot);
   var tf       = p.tf || tfFromSlot(slot);
   var dir      = p.side === "long" ? "LONG" : "SHORT";
   var dirClass = p.side === "long" ? "dir-long" : "dir-short";
-  var tp1Pill  = p.tp1_hit
-    ? '<span class="tp1-pill tp1-hit">TP1 ✓</span>'
-    : '<span class="tp1-pill tp1-open">TP1 open</span>';
+  var scaledQty = (parseFloat(p.qty || 0) * sf);
 
   return '<div class="pos-card">'
     + '<div class="pos-header">'
     +   '<div><span class="pos-title">' + sym + ' <span style="font-size:12px;color:#718096">' + tf + '</span></span></div>'
-    +   '<div style="display:flex;gap:6px;align-items:center">' + tp1Pill + '<span class="' + dirClass + '">' + dir + '</span></div>'
+    +   '<div><span class="' + dirClass + '">' + dir + '</span></div>'
     + '</div>'
     + '<div class="pos-grid">'
     +   '<div><div class="pos-field-label">Entry</div><div class="pos-field-value">' + fmt(p.entry_price, 4) + '</div></div>'
     +   '<div><div class="pos-field-label">Stop Loss</div><div class="pos-field-value neg">' + fmt(p.sl, 4) + '</div></div>'
     +   '<div><div class="pos-field-label">Take Profit</div><div class="pos-field-value pos">' + fmt(p.tp, 4) + '</div></div>'
-    +   '<div><div class="pos-field-label">Leverage</div><div class="pos-field-value">' + (p.leverage || "—") + '\xd7</div></div>'
-    +   '<div><div class="pos-field-label">Qty</div><div class="pos-field-value">' + fmt(p.qty, 4) + '</div></div>'
+    +   '<div><div class="pos-field-label">Leverage</div><div class="pos-field-value">' + (p.leverage || "\u2014") + '\xd7</div></div>'
+    +   '<div><div class="pos-field-label">Qty</div><div class="pos-field-value">' + scaledQty.toFixed(4) + '</div></div>'
     +   '<div><div class="pos-field-label">Opened</div><div class="pos-field-value" style="font-size:11px">' + formatDate(p.entry_time) + '</div></div>'
     + '</div>'
     + '</div>';
 }
 
-function tradeRow(t) {
+function tradeRow(t, sf) {
   var pnlPct  = parseFloat(t.pnl_pct || 0);
+  var pnlAbs  = parseFloat(t.pnl_usdt || 0) * sf;
   var cls     = pnlClass(pnlPct);
   var sign    = pnlSign(pnlPct);
   var pair    = shortPair(t.pair || "");
   var dateStr = formatDate(t.timestamp);
   var exitTxt = (t.exit_reason || "").replace("_", " ").slice(0, 8);
   var sideCol = t.side === "long" ? "#68d391" : "#fc8181";
-  var pnlAbs  = fmt(Math.abs(parseFloat(t.pnl_usdt || 0)));
 
   return '<tr>'
     + '<td><strong>' + pair + '</strong></td>'
-    + '<td style="color:' + sideCol + '">' + (t.side || "—") + '</td>'
+    + '<td style="color:' + sideCol + '">' + (t.side || "\u2014") + '</td>'
     + '<td class="' + cls + '">' + sign + fmt(pnlPct) + '%</td>'
-    + '<td class="' + cls + '">' + sign + '\xa3' + pnlAbs + '</td>'
+    + '<td class="' + cls + '">' + sign + '\xa3' + fmt(Math.abs(pnlAbs)) + '</td>'
     + '<td style="color:#718096;font-size:11px">' + exitTxt + '</td>'
     + '<td style="color:#718096;font-size:11px">' + dateStr + '</td>'
     + '</tr>';
+}
+
+function renderState() {
+  var s  = _rawState;
+  var sf = _scaleFactor;
+  if (!s) return;
+
+  var badge = el("mode-badge");
+  if (s.paper) {
+    badge.textContent = "PAPER";
+    badge.className = "badge badge-paper";
+  } else {
+    badge.textContent = "LIVE";
+    badge.className = "badge badge-live";
+  }
+
+  el("updated").textContent = "Updated " + formatDate(s.updated_at);
+
+  var selectedCap = parseFloat(el("acct-select").value);
+  var scaledEquity = parseFloat(s.equity) * sf;
+  var scaledStart  = selectedCap;
+  var pnlUsdt = (parseFloat(s.equity) - parseFloat(s.initial_capital)) * sf;
+  var pnlPct  = (parseFloat(s.equity) - parseFloat(s.initial_capital)) / parseFloat(s.initial_capital) * 100;
+  var scaledHWM = parseFloat(s.hwm) * sf;
+
+  el("equity").textContent = "\xa3" + fmt(scaledEquity);
+  el("equity-sub").textContent = "Start \xa3" + fmt(scaledStart);
+
+  var pEl = el("pnl");
+  pEl.textContent = pnlSign(pnlPct) + fmt(pnlPct) + "%";
+  pEl.className = "stat-value " + pnlClass(pnlPct);
+  el("pnl-sub").textContent = pnlSign(pnlUsdt) + "\xa3" + fmt(Math.abs(pnlUsdt));
+
+  el("hwm").textContent = "\xa3" + fmt(scaledHWM);
+
+  var pos     = s.positions || {};
+  var posKeys = Object.keys(pos);
+  el("pos-count").textContent = posKeys.length;
+  el("pos-sub").textContent = "max " + (s.max_open || 5);
+
+  var container = el("positions-container");
+  if (posKeys.length === 0) {
+    container.innerHTML = '<div class="empty">No open positions</div>';
+  } else {
+    container.innerHTML = posKeys.map(function(slot) {
+      return posCard(slot, pos[slot], sf);
+    }).join("");
+  }
+}
+
+function renderTrades() {
+  var sf    = _scaleFactor;
+  var tbody = el("trades-body");
+  if (!_rawTrades || _rawTrades.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty">No completed trades yet</td></tr>';
+    return;
+  }
+  tbody.innerHTML = _rawTrades.slice(0, 30).map(function(t) {
+    return tradeRow(t, sf);
+  }).join("");
+}
+
+function onAccountChange() {
+  _scaleFactor = getScaleFactor();
+  renderState();
+  renderTrades();
 }
 
 async function loadState() {
@@ -138,44 +214,9 @@ async function loadState() {
       el("updated").textContent = "Bot initialising\u2026";
       return;
     }
-    var s = await r.json();
-
-    var badge = el("mode-badge");
-    if (s.paper) {
-      badge.textContent = "PAPER";
-      badge.className = "badge badge-paper";
-    } else {
-      badge.textContent = "LIVE";
-      badge.className = "badge badge-live";
-    }
-
-    el("updated").textContent = "Updated " + formatDate(s.updated_at);
-    el("equity").textContent = "\xa3" + fmt(s.equity);
-    el("equity-sub").textContent = "Start \xa3" + fmt(s.initial_capital);
-
-    var pnlPct  = (s.equity - s.initial_capital) / s.initial_capital * 100;
-    var pnlUsdt = s.equity - s.initial_capital;
-    var pEl = el("pnl");
-    pEl.textContent = pnlSign(pnlPct) + fmt(pnlPct) + "%";
-    pEl.className = "stat-value " + pnlClass(pnlPct);
-    el("pnl-sub").textContent = pnlSign(pnlUsdt) + "\xa3" + fmt(Math.abs(pnlUsdt));
-
-    el("hwm").textContent = "\xa3" + fmt(s.hwm);
-
-    var pos     = s.positions || {};
-    var posKeys = Object.keys(pos);
-    el("pos-count").textContent = posKeys.length;
-    el("pos-sub").textContent = "max " + (s.max_open || 5);
-
-    var container = el("positions-container");
-    if (posKeys.length === 0) {
-      container.innerHTML = '<div class="empty">No open positions</div>';
-    } else {
-      container.innerHTML = posKeys.map(function(slot) {
-        return posCard(slot, pos[slot]);
-      }).join("");
-    }
-
+    _rawState = await r.json();
+    _scaleFactor = getScaleFactor();
+    renderState();
   } catch(e) {
     el("updated").textContent = "Connection error";
   }
@@ -184,18 +225,9 @@ async function loadState() {
 async function loadTrades() {
   try {
     var r      = await fetch("/api/trades");
-    var trades = await r.json();
-    var tbody  = el("trades-body");
-
-    if (!trades || trades.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="6" class="empty">No completed trades yet</td></tr>';
-      return;
-    }
-
-    tbody.innerHTML = trades.slice(0, 30).map(function(t) {
-      return tradeRow(t);
-    }).join("");
-
+    _rawTrades = await r.json();
+    _scaleFactor = getScaleFactor();
+    renderTrades();
   } catch(e) {
     el("trades-body").innerHTML = '<tr><td colspan="6" class="empty">Error loading trades</td></tr>';
   }
@@ -236,9 +268,21 @@ HTML = """<!DOCTYPE html>
       border-bottom: 1px solid #2d3148; position: sticky; top: 0; z-index: 10;
     }
     header h1 { font-size: 17px; font-weight: 700; letter-spacing: 0.3px; }
+    .header-right { display: flex; align-items: center; gap: 10px; }
     .badge { font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 99px; letter-spacing: 0.5px; }
     .badge-paper { background: #2d3748; color: #90cdf4; }
     .badge-live  { background: #22543d; color: #68d391; }
+    .acct-select {
+      appearance: none; -webkit-appearance: none;
+      background: #2d3148; color: #e2e8f0;
+      border: 1px solid #3d4268; border-radius: 8px;
+      padding: 5px 28px 5px 10px; font-size: 13px; font-weight: 600;
+      cursor: pointer; outline: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2390cdf4' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: right 8px center;
+    }
+    .acct-select:focus { border-color: #90cdf4; }
+    .acct-label { font-size: 11px; color: #718096; white-space: nowrap; }
     .updated { font-size: 11px; color: #718096; margin-top: 2px; }
     .section { padding: 16px; }
     .section-title { font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: #718096; margin-bottom: 10px; }
@@ -250,6 +294,11 @@ HTML = """<!DOCTYPE html>
     .pos  { color: #68d391; }
     .neg  { color: #fc8181; }
     .neu  { color: #e2e8f0; }
+    .acct-banner {
+      margin: 0 16px 4px; background: #1e2235; border: 1px solid #3d4268;
+      border-radius: 8px; padding: 8px 14px;
+      font-size: 12px; color: #90cdf4; display: flex; align-items: center; gap: 6px;
+    }
     .pos-card { background: #1a1d2e; border: 1px solid #2d3148; border-radius: 10px; padding: 14px; margin-bottom: 10px; }
     .pos-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
     .pos-title { font-size: 15px; font-weight: 700; }
@@ -258,9 +307,6 @@ HTML = """<!DOCTYPE html>
     .pos-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
     .pos-field-label { font-size: 10px; color: #718096; }
     .pos-field-value { font-size: 13px; font-weight: 600; margin-top: 1px; }
-    .tp1-pill { font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 99px; }
-    .tp1-hit  { background: #22543d; color: #68d391; }
-    .tp1-open { background: #2d3748; color: #90cdf4; }
     .trade-table { width: 100%; border-collapse: collapse; font-size: 12px; }
     .trade-table th { text-align: left; padding: 6px 8px; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: #718096; border-bottom: 1px solid #2d3148; }
     .trade-table td { padding: 8px 8px; border-bottom: 1px solid #1e2235; }
@@ -276,8 +322,23 @@ HTML = """<!DOCTYPE html>
     <h1>&#x1F916; Trading Bot</h1>
     <div class="updated" id="updated">Loading&#x2026;</div>
   </div>
-  <div id="mode-badge" class="badge badge-paper">PAPER</div>
+  <div class="header-right">
+    <div>
+      <div class="acct-label">Account size</div>
+      <select class="acct-select" id="acct-select" onchange="onAccountChange()">
+        <option value="100">&#xa3;100</option>
+        <option value="500">&#xa3;500</option>
+        <option value="1000">&#xa3;1,000</option>
+        <option value="5000">&#xa3;5,000</option>
+      </select>
+    </div>
+    <div id="mode-badge" class="badge badge-paper">PAPER</div>
+  </div>
 </header>
+
+<div class="acct-banner" id="acct-banner">
+  &#x1F4CA; Showing projected figures for a <strong id="acct-banner-size">&#xa3;100</strong> account &mdash; same trades, scaled P&amp;L.
+</div>
 
 <div class="section">
   <div class="section-title">Account</div>
@@ -329,6 +390,14 @@ HTML = """<!DOCTYPE html>
 </div>
 
 <script src="/static/app.js"></script>
+<script>
+  // Keep banner label in sync with dropdown
+  document.getElementById("acct-select").addEventListener("change", function() {
+    var val = parseFloat(this.value);
+    var fmt = val >= 1000 ? "\xa3" + (val/1000).toFixed(0) + ",000" : "\xa3" + val;
+    document.getElementById("acct-banner-size").textContent = fmt;
+  });
+</script>
 </body>
 </html>"""
 
