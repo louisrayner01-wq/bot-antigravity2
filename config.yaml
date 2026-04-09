@@ -160,7 +160,7 @@ strategy:
   # Backtest shows Thu WR is 53-83% across all strategies — structural edge.
   thursday_buy_threshold:  0.50
   thursday_sell_threshold: 0.50
-  thursday_min_rr:         2.0
+  thursday_min_rr:         1.5
 
   # ── Hold / exit rules ──────────────────────────────────────────────────────
   min_holding_candles: 2

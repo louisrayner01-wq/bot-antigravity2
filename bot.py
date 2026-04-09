@@ -122,7 +122,7 @@ def print_trade_card(pair: str, signal: int, confidence: float,
 
     wr_str  = f"{win_rate*100:.1f}%" if win_rate is not None else "N/A"
     rr_str  = f"{avg_rr:.2f}"        if avg_rr   is not None else "N/A"
-    verdict_str = "✅ TAKE THE TRADE" if verdict else "❌ SKIP (EV/Win-rate gate)"
+    verdict_str = "✅ TAKE THE TRADE" if verdict else "❌ SKIP (R/R or EV gate)"
 
     htf_str = ""
     if htf_label:
@@ -1029,7 +1029,7 @@ class TradingBot:
 
         if not rr_ok:
             self.log.info("  ⛔ %s[%s]  R/R %.2f < min %.2f — skipped",
-                          symbol, timeframe_label, actual_rr, self.risk.min_rr)
+                          symbol, timeframe_label, actual_rr, min_rr)
             return False
         if not ev_ok:
             self.log.info("  ⛔ %s[%s]  EV gate — %s", symbol, timeframe_label, ev_reason)
