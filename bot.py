@@ -44,7 +44,7 @@ from typing import Dict, Optional
 import pandas as pd
 
 from weex_client   import WeexClient
-from indicators    import candles_to_df
+from indicators    import candles_to_df, compute_features
 from strategy      import TradingStrategy, BUY, SELL, HOLD
 from risk_manager  import RiskManager, Position
 from trade_logger  import TradeLogger
@@ -1331,6 +1331,7 @@ class TradingBot:
                 results.append(f"{name}[{tf_label}]→NO_DATA")
                 continue
 
+            df    = compute_features(df)
             price = self.live_price(symbol, df)
             atr   = float(df["atr_14"].iloc[-1]) if "atr_14" in df.columns else price * 0.01
 
@@ -1401,6 +1402,7 @@ class TradingBot:
             if df is None or len(df) < 60:
                 continue
 
+            df    = compute_features(df)
             price = self.live_price(symbol, df)
             atr   = float(df["atr_14"].iloc[-1]) if "atr_14" in df.columns else price * 0.01
 
