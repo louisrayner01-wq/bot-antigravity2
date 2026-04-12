@@ -384,7 +384,27 @@ class TradingBot:
         self.log.info("  STARTUP PIPELINE  (FUTURES mode)")
         self.log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-        # ── Step 0: Set leverage for all pairs ───────────────────────────────
+        # ── Step 0a: Restore equity/HWM from last saved state ────────────────
+        state_path = os.path.join(self.data_dir, "state.json")
+        try:
+            if os.path.exists(state_path):
+                with open(state_path) as _sf:
+                    _saved = json.load(_sf)
+                _eq  = float(_saved.get("equity", 0))
+                _hwm = float(_saved.get("hwm", 0))
+                if _eq > 0:
+                    self.risk.equity          = _eq
+                    self.risk.day_start_equity = _eq
+                    if _hwm > 0:
+                        self.risk.hwm = _hwm
+                    self.log.info("💾 Restored equity=£%.4f  HWM=£%.4f from state.json",
+                                  self.risk.equity, self.risk.hwm)
+                else:
+                    self.log.info("💾 state.json found but equity=0 — keeping initial_capital")
+        except Exception as _exc:
+            self.log.warning("Could not restore state from state.json: %s", _exc)
+
+        # ── Step 0b: Set leverage for all pairs ──────────────────────────────
         self._setup_leverage()
 
         # ── Step 1: Data collection ───────────────────────────────────────────
@@ -467,8 +487,9 @@ class TradingBot:
         """
         if not self.strategy.analysis:
             return
-        recs = self.strategy.analysis.get("recommendations", {})
-        rev_map = {v: k for k, v in TF_LABELS.items()}
+        recs     = self.strategy.analysis.get("recommendations", {})
+        rev_map  = {v: k for k, v in TF_LABELS.items()}
+        data_cfg = self.cfg.get("data", {})
 
         # ── Auto-select HTF based on signal TF (next timeframe up) ────────────
         HTF_UP       = {"5": "60", "15": "60", "60": "240", "240": "1440", "1440": "1440"}
@@ -478,6 +499,12 @@ class TradingBot:
         best_signal = recs.get("best_signal_timeframe")  # e.g. "4h"
         if best_signal:
             sig_min = rev_map.get(best_signal)
+            # Respect min_signal_tf_minutes — never let analysis override below our floor
+            _min_tf = data_cfg.get("min_signal_tf_minutes")
+            if sig_min and _min_tf and int(sig_min) < int(_min_tf):
+                self.log.info("📊 Analysis recommended %s but min_signal_tf=%s — keeping %s",
+                              best_signal, _min_tf, TF_LABELS.get(self.tf, self.tf))
+                sig_min = None
             if sig_min and sig_min != self.tf:
                 old_tf   = self.tf
                 self.tf  = sig_min
@@ -526,10 +553,9 @@ class TradingBot:
             self.log.info("📊 Per-symbol TF assignments: %s", assignments)
 
         # ── Enforce min/max signal TF bounds ─────────────────────────────────────
-        # min_signal_tf_minutes: floor — 5m is too noisy/frequent for signals
+        # min_signal_tf_minutes: floor — respect the configured minimum TF
         # max_signal_tf_minutes: ceiling — 1d has only 730 candles, too thin
         # 15m (~70k candles), 1h (~17k), 4h (~4.4k) all compete freely on CV.
-        data_cfg   = self.cfg.get("data", {})
         min_tf_cfg = data_cfg.get("min_signal_tf_minutes")
         max_tf_cfg = data_cfg.get("max_signal_tf_minutes")
 

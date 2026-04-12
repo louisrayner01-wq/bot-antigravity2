@@ -106,6 +106,10 @@ strategy:
     - "SOLUSDT_UMCBL_15m+1h"   # 42.3% WR ❌, MaxDD -15.2%
     - "ETHUSDT_UMCBL_15m+1h"   # 44.2% WR, MaxDD -16.6%
     - "BTCUSDT_UMCBL_15m+1h"   # 44.9% WR, MaxDD -9.0% — marginal, dropped for cleaner slots
+    # ── Single-TF 15m (blocked — 5m+4h is the active short-tier strategy) ───
+    - "BTCUSDT_UMCBL_15m"      # single-TF blocked; use 5m+4h confluence instead
+    - "ETHUSDT_UMCBL_15m"      # single-TF blocked
+    - "SOLUSDT_UMCBL_15m"      # single-TF blocked
     # ── Replaced 15m short-tier strategies (swapped for 5m+4h) ──────────────
     - "BTCUSDT_UMCBL_15m+1d"   # replaced by BTC 5m+4h — same slot tier, faster turnover
     - "ETHUSDT_UMCBL_15m+1d"   # replaced by ETH 5m+4h
