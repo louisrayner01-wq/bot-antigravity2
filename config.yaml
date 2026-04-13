@@ -124,6 +124,19 @@ strategy:
     - "ETHUSDT_UMCBL_5m+1h"    # 5m+4h preferred for ETH
     - "ETHUSDT_UMCBL_5m+1d"    # 5m+4h preferred for ETH
 
+  # ── Fixed strategy list ────────────────────────────────────────────────────
+  # Hardcoded strategies — bypasses analysis discovery entirely.
+  # Proven profitable in 2yr backtest via strategy_search.py (2026-04-12).
+  # Short tier (5m+4h): fast turnover ~2h avg hold, 3 slots
+  # Long tier (1h+1d):  trend-following, 3 slots — day/time blocks still apply
+  fixed_strategies:
+    - {symbol: "BTCUSDT_UMCBL", name: "BTC", tf_min: "5",    htf_min: "240",  slot_key: "BTCUSDT_UMCBL_5m+4h",  strategy_type: "confluence"}
+    - {symbol: "ETHUSDT_UMCBL", name: "ETH", tf_min: "5",    htf_min: "240",  slot_key: "ETHUSDT_UMCBL_5m+4h",  strategy_type: "confluence"}
+    - {symbol: "SOLUSDT_UMCBL", name: "SOL", tf_min: "5",    htf_min: "240",  slot_key: "SOLUSDT_UMCBL_5m+4h",  strategy_type: "confluence"}
+    - {symbol: "BTCUSDT_UMCBL", name: "BTC", tf_min: "60",   htf_min: "1440", slot_key: "BTCUSDT_UMCBL_1h+1d",  strategy_type: "confluence"}
+    - {symbol: "ETHUSDT_UMCBL", name: "ETH", tf_min: "60",   htf_min: "1440", slot_key: "ETHUSDT_UMCBL_1h+1d",  strategy_type: "confluence"}
+    - {symbol: "SOLUSDT_UMCBL", name: "SOL", tf_min: "60",   htf_min: "1440", slot_key: "SOLUSDT_UMCBL_1h+1d",  strategy_type: "confluence"}
+
   # ── Time-of-day entry gates ───────────────────────────────────────────────
   # Block new entries during consistently weak UTC hours (across all strategies).
   # 03:00 — worst single hour, 8/12 strategies below 45% WR
@@ -174,17 +187,17 @@ strategy:
   min_holding_candles: 2
 
   # ── Self-improvement schedule ──────────────────────────────────────────────
-  # The bot retrains MORE FREQUENTLY early on to learn fast,
-  # then gradually slows down as its data set matures.
-  #   0–14 completed trades  →  retrain every 5
-  #  15–39 completed trades  →  retrain every 10
-  #  40–99 completed trades  →  retrain every 20
-  # 100+   completed trades  →  retrain every 40
+  # Strategies were proven on 2yr backtest — don't retrain on noise.
+  # Larger intervals prevent live trades from degrading well-calibrated models.
+  #   0–49  completed trades  →  retrain every 25
+  #  50–149 completed trades  →  retrain every 40
+  # 150–299 completed trades  →  retrain every 60
+  # 300+    completed trades  →  retrain every 100
   retrain_stages:
-    - {after_trades:   0, retrain_every:  5}
-    - {after_trades:  15, retrain_every: 10}
-    - {after_trades:  40, retrain_every: 20}
-    - {after_trades: 100, retrain_every: 40}
+    - {after_trades:   0, retrain_every:  25}
+    - {after_trades:  50, retrain_every:  40}
+    - {after_trades: 150, retrain_every:  60}
+    - {after_trades: 300, retrain_every: 100}
 
   # ── Labelling ──────────────────────────────────────────────────────────────
   min_training_samples:  60    # Don't train until we have at least 60 labelled samples
@@ -209,7 +222,7 @@ data:
   confluence_timeframe: "60"    # 1h filter applied on top of 15m signals
 
   # Analysis results older than this many days trigger a fresh analysis run
-  analysis_stale_days:  1     # force fresh analysis on next deploy — picks up 5m strategies. Set back to 9999 after first restart.
+  analysis_stale_days:  9999  # strategies hardcoded via fixed_strategies — skip re-analysis on restart
 
   # Signal timeframe bounds — analysis picks the best TF per symbol automatically.
   #

@@ -614,11 +614,39 @@ class TradingBot:
           dir_tf_min    — direction TF minutes (MTF only) e.g. "240"
           slot_key      — unique position key e.g. "BTCUSDT_UMCBL_4h"
 
-        Strategy list comes from analysis profitable_strategies (all (symbol, TF)
-        combos that scored >= min_strategy_accuracy in backtesting).
+        If fixed_strategies is defined in config, those are used directly and
+        analysis discovery is skipped entirely.
         Falls back to one entry per enabled pair if analysis produced nothing.
         """
         HTF_UP      = {"5": "60", "15": "60", "60": "240", "240": "1440", "1440": "1440"}
+
+        # ── Fixed strategies: bypass analysis entirely ────────────────────────
+        fixed = self.cfg.get("strategy", {}).get("fixed_strategies", [])
+        if fixed:
+            strategies = []
+            for s in fixed:
+                tf_min  = str(s["tf_min"])
+                htf_min = str(s["htf_min"])
+                strategies.append({
+                    "symbol":        s["symbol"],
+                    "name":          s["name"],
+                    "tf_label":      TF_LABELS.get(tf_min, tf_min + "m"),
+                    "tf_min":        tf_min,
+                    "htf_min":       htf_min,
+                    "dir_tf_min":    None,
+                    "strategy_type": s.get("strategy_type", "confluence"),
+                    "filter_tf":     TF_LABELS.get(htf_min, htf_min + "m"),
+                    "slot_key":      s["slot_key"],
+                    "cv_accuracy":   1.0,
+                })
+            self.active_strategies = strategies
+            self.log.info("📊 Fixed strategies (%d):", len(strategies))
+            for s in strategies:
+                self.log.info("   %s [%s+%s]  slot=%s",
+                              s["name"], s["tf_label"],
+                              TF_LABELS.get(s["htf_min"], s["htf_min"]),
+                              s["slot_key"])
+            return
         rev_map     = {v: k for k, v in TF_LABELS.items()}
         min_acc       = self.cfg.get("strategy", {}).get("min_strategy_accuracy", 0.52)
         blocked_slots = set(self.cfg.get("strategy", {}).get("blocked_slots", []))
