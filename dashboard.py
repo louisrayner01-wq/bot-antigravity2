@@ -12,11 +12,13 @@ Start with: uvicorn dashboard:app --host 0.0.0.0 --port $PORT
 """
 
 import csv
+import io
 import json
 import os
+import zipfile
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
 app = FastAPI()
 
@@ -25,6 +27,25 @@ TRADES_FILE = os.environ.get("TRADES_FILE", "logs/trades.csv")
 
 
 # ── API endpoints ──────────────────────────────────────────────────────────────
+
+@app.get("/api/download-models")
+def download_models():
+    """Temporary endpoint — download all model files from /data/models/ as a zip."""
+    models_dir = "/data/models"
+    if not os.path.exists(models_dir):
+        return JSONResponse({"error": "No models directory found"}, status_code=404)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for fname in os.listdir(models_dir):
+            fpath = os.path.join(models_dir, fname)
+            if os.path.isfile(fpath):
+                zf.write(fpath, fname)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=models.zip"},
+    )
 
 @app.get("/api/state")
 def get_state():
