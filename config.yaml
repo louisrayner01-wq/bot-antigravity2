@@ -207,7 +207,7 @@ strategy:
 
 logging:
   log_file:    "logs/bot.log"
-  trades_file: "logs/trades.csv"
+  trades_file: "/data/trades.csv"
   models_dir:  "/data/models/"
   level:       "INFO"
 

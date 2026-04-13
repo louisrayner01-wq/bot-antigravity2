@@ -23,7 +23,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingRes
 app = FastAPI()
 
 STATE_FILE  = os.environ.get("STATE_FILE",  "/data/state.json")
-TRADES_FILE = os.environ.get("TRADES_FILE", "logs/trades.csv")
+TRADES_FILE = os.environ.get("TRADES_FILE", "/data/trades.csv")
 
 
 # ── API endpoints ──────────────────────────────────────────────────────────────
