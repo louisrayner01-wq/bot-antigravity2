@@ -47,6 +47,26 @@ def download_models():
         headers={"Content-Disposition": "attachment; filename=models.zip"},
     )
 
+@app.get("/api/calendar")
+def get_calendar():
+    """Return daily PnL summary grouped by date for the calendar view."""
+    if not os.path.exists(TRADES_FILE):
+        return {}
+    days = {}
+    with open(TRADES_FILE, newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            ts = row.get("timestamp", "")[:10]  # YYYY-MM-DD
+            if not ts:
+                continue
+            pnl = float(row.get("pnl_usdt", 0) or 0)
+            if ts not in days:
+                days[ts] = {"pnl": 0.0, "trades": 0}
+            days[ts]["pnl"]    += pnl
+            days[ts]["trades"] += 1
+    return days
+
+
 @app.get("/api/state")
 def get_state():
     if not os.path.exists(STATE_FILE):
@@ -353,6 +373,9 @@ HTML = """<!DOCTYPE html>
         <option value="5000">&#xa3;5,000</option>
       </select>
     </div>
+    <a href="/calendar" target="_blank" style="text-decoration:none;">
+      <div class="badge" style="background:#2d3148;color:#90cdf4;cursor:pointer;">&#x1F4C5; Calendar</div>
+    </a>
     <div id="mode-badge" class="badge badge-paper">PAPER</div>
   </div>
 </header>
@@ -426,3 +449,204 @@ HTML = """<!DOCTYPE html>
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
     return HTML
+
+
+CALENDAR_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PnL Calendar</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0f1117; color: #e2e8f0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px; padding-bottom: 32px;
+    }
+    header {
+      background: #1a1d2e; padding: 16px;
+      display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 1px solid #2d3148; position: sticky; top: 0; z-index: 10;
+    }
+    header h1 { font-size: 17px; font-weight: 700; }
+    .nav-btn {
+      background: #2d3148; color: #e2e8f0; border: 1px solid #3d4268;
+      border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 600;
+      cursor: pointer; outline: none;
+    }
+    .nav-btn:hover { background: #3d4268; }
+    .month-label { font-size: 16px; font-weight: 700; min-width: 160px; text-align: center; }
+    .summary-bar {
+      display: flex; gap: 16px; padding: 12px 16px;
+      background: #1a1d2e; border-bottom: 1px solid #2d3148;
+      font-size: 13px; flex-wrap: wrap;
+    }
+    .summary-item { display: flex; flex-direction: column; }
+    .summary-label { font-size: 10px; color: #718096; text-transform: uppercase; letter-spacing: 0.5px; }
+    .summary-value { font-size: 15px; font-weight: 700; margin-top: 2px; }
+    .pos { color: #68d391; }
+    .neg { color: #fc8181; }
+    .neu { color: #e2e8f0; }
+    .cal-grid {
+      display: grid; grid-template-columns: repeat(7, 1fr);
+      gap: 4px; padding: 12px 10px;
+    }
+    .day-header {
+      text-align: center; font-size: 10px; font-weight: 700;
+      color: #718096; text-transform: uppercase; letter-spacing: 0.5px;
+      padding: 6px 0;
+    }
+    .day-cell {
+      background: #1a1d2e; border: 1px solid #2d3148; border-radius: 8px;
+      padding: 8px 6px; min-height: 72px;
+      display: flex; flex-direction: column; justify-content: space-between;
+    }
+    .day-cell.green { background: #1a2e22; border-color: #276749; }
+    .day-cell.red   { background: #2d1515; border-color: #9b2c2c; }
+    .day-cell.empty { background: transparent; border-color: transparent; }
+    .day-cell.today { border-color: #90cdf4; }
+    .day-num { font-size: 11px; font-weight: 700; color: #718096; }
+    .day-cell.green .day-num { color: #68d391; }
+    .day-cell.red   .day-num { color: #fc8181; }
+    .day-pnl { font-size: 13px; font-weight: 700; margin-top: 4px; }
+    .day-trades { font-size: 10px; color: #718096; margin-top: 2px; }
+    .day-cell.green .day-trades { color: #48bb78; }
+    .day-cell.red   .day-trades { color: #f56565; }
+  </style>
+</head>
+<body>
+<header>
+  <a href="/" style="text-decoration:none;color:#90cdf4;font-size:13px;">&#x2190; Dashboard</a>
+  <h1>&#x1F4C5; PnL Calendar</h1>
+  <div style="width:80px"></div>
+</header>
+
+<div class="summary-bar">
+  <div class="summary-item">
+    <span class="summary-label">Month PnL</span>
+    <span class="summary-value" id="month-pnl">&#x2014;</span>
+  </div>
+  <div class="summary-item">
+    <span class="summary-label">Trades</span>
+    <span class="summary-value neu" id="month-trades">&#x2014;</span>
+  </div>
+  <div class="summary-item">
+    <span class="summary-label">Green Days</span>
+    <span class="summary-value pos" id="green-days">&#x2014;</span>
+  </div>
+  <div class="summary-item">
+    <span class="summary-label">Red Days</span>
+    <span class="summary-value neg" id="red-days">&#x2014;</span>
+  </div>
+  <div style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+    <button class="nav-btn" onclick="prevMonth()">&#x2190;</button>
+    <span class="month-label" id="month-label"></span>
+    <button class="nav-btn" onclick="nextMonth()">&#x2192;</button>
+  </div>
+</div>
+
+<div class="cal-grid" id="cal-grid"></div>
+
+<script>
+var _data = {};
+var _now  = new Date();
+var _year = _now.getFullYear();
+var _mon  = _now.getMonth(); // 0-based
+
+var MONTHS = ["January","February","March","April","May","June",
+              "July","August","September","October","November","December"];
+var DAYS   = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+
+function fmt(v, d) {
+  return parseFloat(v).toFixed(d === undefined ? 2 : d);
+}
+
+function pad(n) { return n < 10 ? "0" + n : "" + n; }
+
+function dateKey(y, m, d) {
+  return y + "-" + pad(m + 1) + "-" + pad(d);
+}
+
+function render() {
+  document.getElementById("month-label").textContent = MONTHS[_mon] + " " + _year;
+
+  var firstDay = new Date(_year, _mon, 1).getDay(); // 0=Sun
+  var daysInMonth = new Date(_year, _mon + 1, 0).getDate();
+  // Convert Sunday=0 to Mon-based offset
+  var offset = (firstDay + 6) % 7;
+
+  var todayKey = dateKey(_now.getFullYear(), _now.getMonth(), _now.getDate());
+
+  var monthPnl = 0, monthTrades = 0, greenDays = 0, redDays = 0;
+
+  var html = DAYS.map(function(d) {
+    return '<div class="day-header">' + d + '</div>';
+  }).join("");
+
+  // Empty cells before first day
+  for (var i = 0; i < offset; i++) {
+    html += '<div class="day-cell empty"></div>';
+  }
+
+  for (var d = 1; d <= daysInMonth; d++) {
+    var key  = dateKey(_year, _mon, d);
+    var info = _data[key];
+    var cls  = "day-cell";
+    var pnlHtml = "";
+    var tradeHtml = "";
+
+    if (key === todayKey) cls += " today";
+
+    if (info) {
+      monthPnl    += info.pnl;
+      monthTrades += info.trades;
+      if (info.pnl > 0) { cls += " green"; greenDays++; }
+      else if (info.pnl < 0) { cls += " red"; redDays++; }
+      var sign = info.pnl >= 0 ? "+" : "";
+      pnlHtml   = '<div class="day-pnl">' + sign + "\xa3" + fmt(Math.abs(info.pnl)) + '</div>';
+      tradeHtml = '<div class="day-trades">' + info.trades + ' trade' + (info.trades !== 1 ? "s" : "") + '</div>';
+    }
+
+    html += '<div class="' + cls + '">'
+          + '<div class="day-num">' + d + '</div>'
+          + pnlHtml
+          + tradeHtml
+          + '</div>';
+  }
+
+  document.getElementById("cal-grid").innerHTML = html;
+
+  var mpEl = document.getElementById("month-pnl");
+  var sign = monthPnl >= 0 ? "+" : "";
+  mpEl.textContent = sign + "\xa3" + fmt(Math.abs(monthPnl));
+  mpEl.className = "summary-value " + (monthPnl > 0 ? "pos" : monthPnl < 0 ? "neg" : "neu");
+  document.getElementById("month-trades").textContent = monthTrades;
+  document.getElementById("green-days").textContent   = greenDays;
+  document.getElementById("red-days").textContent     = redDays;
+}
+
+function prevMonth() {
+  _mon--;
+  if (_mon < 0) { _mon = 11; _year--; }
+  render();
+}
+
+function nextMonth() {
+  _mon++;
+  if (_mon > 11) { _mon = 0; _year++; }
+  render();
+}
+
+fetch("/api/calendar").then(function(r) { return r.json(); }).then(function(d) {
+  _data = d;
+  render();
+});
+</script>
+</body>
+</html>"""
+
+
+@app.get("/calendar", response_class=HTMLResponse)
+def calendar_view():
+    return CALENDAR_HTML
