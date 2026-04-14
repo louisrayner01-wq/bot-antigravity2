@@ -54,6 +54,7 @@ from mae_analyser   import MAEAnalyser
 from historical_mae import run_historical_mae
 from news_calendar  import (entries_blocked, stops_should_tighten,
                              next_event, NEWS_TIGHTEN_PCT)
+from telegram_notifier import notify_open, notify_close
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1144,6 +1145,8 @@ class TradingBot:
                 self.risk.open_position(pos, slot_key=slot_key)
                 self.log.info("🟢 LONG  %s[%s]  qty=%.5f @ £%.4f  SL=£%.4f  TP=£%.4f",
                               symbol, timeframe_label, qty, price, sl, tp)
+                notify_open(symbol, "long", timeframe_label, price, sl, tp,
+                            self.risk.risk_amount_today(), self.risk.equity)
                 return True
 
         elif signal == SELL:
@@ -1163,6 +1166,8 @@ class TradingBot:
                 self.risk.open_position(pos, slot_key=slot_key)
                 self.log.info("🔴 SHORT %s[%s]  qty=%.5f @ £%.4f  SL=£%.4f  TP=£%.4f",
                               symbol, timeframe_label, qty, price, sl, tp)
+                notify_open(symbol, "short", timeframe_label, price, sl, tp,
+                            self.risk.risk_amount_today(), self.risk.equity)
                 return True
 
         return False
@@ -1270,6 +1275,9 @@ class TradingBot:
                 if trade:
                     trade["slot_key"] = slot_key
                     self.logger.log_trade(trade, self.risk.equity, exit_reason)
+                    notify_close(symbol, trade["side"], tf_label,
+                                 trade["entry_price"], trade["exit_price"],
+                                 trade["pnl_usdt"], self.risk.equity, exit_reason)
                     full_df = self.fetch_candles(symbol)
                     if full_df is not None:
                         self.strategy.record_outcome(
