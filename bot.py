@@ -1128,6 +1128,10 @@ class TradingBot:
         entry_candle_low  = float(df["low"].iloc[-1])  if "low"  in df.columns else 0.0
         entry_candle_high = float(df["high"].iloc[-1]) if "high" in df.columns else 0.0
 
+        # Re-fetch live price at the moment of order placement — the price from
+        # the top of the scan loop may be several seconds stale by this point.
+        price = self.live_price(symbol, df)
+
         if signal == BUY:
             order_id = self._open_long(symbol, qty, price)
             if order_id:
