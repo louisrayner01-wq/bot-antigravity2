@@ -15,7 +15,7 @@ Key changes vs v1:
 import logging
 from dataclasses import dataclass
 from typing import Optional, Dict, Tuple
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ class RiskManager:
         self.equity             = float(self.initial_capital)
         self.hwm                = float(self.initial_capital)  # high-water mark
         self.day_start_equity   = float(self.initial_capital)
-        self.today              = date.today()
+        self.today              = datetime.now(timezone.utc).date()
         self.open_positions: Dict[str, Position] = {}
 
         # TF tier config — short tier and long tier per symbol each get one slot
@@ -109,10 +109,13 @@ class RiskManager:
         dow = now.weekday()
         pct = self.day_risk_pct.get(dow, 0.05)
         hour_mult = self.hour_risk_mult.get(now.hour, 1.0)
-        return round(self.hwm * pct * hour_mult, 4)
+        raw = self.hwm * pct * hour_mult
+        # Single trade can never exceed the daily loss cap
+        daily_cap = self.hwm * self.max_daily_loss_pct
+        return round(min(raw, daily_cap), 4)
 
     def update_equity(self, new_equity: float):
-        today = date.today()
+        today = datetime.now(timezone.utc).date()
         if today != self.today:
             self.day_start_equity = new_equity
             self.today = today
