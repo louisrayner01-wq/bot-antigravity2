@@ -125,12 +125,12 @@ class RiskManager:
         return self.day_start_equity - self.equity   # positive = loss
 
     def trading_halted(self) -> bool:
-        cap = self.equity * self.max_daily_loss_pct
+        cap = self.hwm * self.max_daily_loss_pct
         halted = self.daily_loss() >= cap
         if halted:
             logger.warning(
-                "🛑 Daily loss limit hit (£%.2f / 12%% of £%.2f = £%.2f). Trading halted for today.",
-                self.daily_loss(), self.equity, cap
+                "🛑 Daily loss limit hit (£%.2f / %.0f%% of HWM £%.2f = £%.2f). Trading halted for today.",
+                self.daily_loss(), self.max_daily_loss_pct * 100, self.hwm, cap
             )
         return halted
 
