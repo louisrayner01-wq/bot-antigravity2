@@ -1,53 +1,64 @@
 """
 fix_false_stops.py
-Reverses the 4 false stop-outs on SOL_5m+4h caused by the pre-entry
-wick bug on 15 Apr between 22:10 and 22:27 UTC.
+Reverses the 4 false SOL stop-outs caused by the pre-entry wick bug.
 
-Run once on Railway:  railway run python fix_false_stops.py
+Run in two steps:
+  1. Preview:  railway run python fix_false_stops.py
+  2. Confirm:  railway run python fix_false_stops.py --apply
+
+Step 1 prints the trades it would remove so you can verify before committing.
 """
 
 import csv
 import json
-import os
-from datetime import datetime, timezone
+import sys
 
 TRADES_FILE = "/data/trades.csv"
 STATE_FILE  = "/data/risk_state.json"
+APPLY       = "--apply" in sys.argv
+N_TO_REMOVE = 4   # the 4 false stop-outs
 
-# ── Identify the false trades ─────────────────────────────────────────────────
-def is_false_trade(row: dict) -> bool:
-    ts = row.get("timestamp", "")
-    return (
-        row.get("pair", "")        == "SOLUSDT_UMCBL" and
-        row.get("exit_reason", "") == "stop_loss" and
-        "2026-04-15" in ts and
-        any(f"22:{m}" in ts for m in ["10", "16", "21", "27"])
-    )
-
-# ── Read trades, split out the false ones ─────────────────────────────────────
+# ── Read all trades ───────────────────────────────────────────────────────────
 with open(TRADES_FILE, newline="") as f:
-    reader    = csv.DictReader(f)
+    reader     = csv.DictReader(f)
     fieldnames = reader.fieldnames
     all_trades = list(reader)
 
-false_trades  = [r for r in all_trades if is_false_trade(r)]
-clean_trades  = [r for r in all_trades if not is_false_trade(r)]
+# ── Find the last N SOL stop losses on 15 Apr ─────────────────────────────────
+sol_stops = [
+    (i, r) for i, r in enumerate(all_trades)
+    if r.get("pair") == "SOLUSDT_UMCBL"
+    and r.get("exit_reason") == "stop_loss"
+    and "2026-04-15" in r.get("timestamp", "")
+]
 
-if not false_trades:
-    print("No matching false trades found — nothing to do.")
-    exit(0)
+print(f"Found {len(sol_stops)} SOL stop loss(es) on 15 Apr:")
+for i, (idx, r) in enumerate(sol_stops):
+    print(f"  [{i}] row={idx}  {r['timestamp']}  pnl=£{r['pnl_usdt']}  equity_after=£{r['equity_after']}")
 
-total_loss = sum(float(r["pnl_usdt"]) for r in false_trades)
-print(f"Found {len(false_trades)} false trade(s) totalling £{total_loss:.4f}")
-for r in false_trades:
-    print(f"  {r['timestamp']}  pnl=£{r['pnl_usdt']}  equity_after=£{r['equity_after']}")
+if len(sol_stops) < N_TO_REMOVE:
+    print(f"\nExpected {N_TO_REMOVE} trades, only found {len(sol_stops)} — aborting.")
+    sys.exit(1)
 
-# ── Rewrite trades CSV without the false trades ───────────────────────────────
+# Take the last N_TO_REMOVE (most recent)
+to_remove   = sol_stops[-N_TO_REMOVE:]
+remove_idxs = {idx for idx, _ in to_remove}
+total_loss  = sum(float(r["pnl_usdt"]) for _, r in to_remove)
+
+print(f"\nWill remove rows: {[idx for idx, _ in to_remove]}")
+print(f"Total loss to restore: £{abs(total_loss):.2f}")
+
+if not APPLY:
+    print("\nDry run — pass --apply to actually apply the fix.")
+    sys.exit(0)
+
+# ── Rewrite CSV ───────────────────────────────────────────────────────────────
+clean_trades = [r for i, r in enumerate(all_trades) if i not in remove_idxs]
 with open(TRADES_FILE, "w", newline="") as f:
     writer = csv.DictWriter(f, fieldnames=fieldnames)
     writer.writeheader()
     writer.writerows(clean_trades)
-print(f"Trades CSV updated — {len(false_trades)} row(s) removed.")
+print(f"Trades CSV updated — {N_TO_REMOVE} row(s) removed.")
 
 # ── Restore equity in risk_state.json ─────────────────────────────────────────
 with open(STATE_FILE) as f:
@@ -55,14 +66,12 @@ with open(STATE_FILE) as f:
 
 old_equity = state["equity"]
 state["equity"] += abs(total_loss)
-# If the restored equity exceeds HWM, update HWM too
 if state["equity"] > state["hwm"]:
     state["hwm"] = state["equity"]
-# Restore day_start_equity too so daily loss calc is clean
 state["day_start_equity"] = max(state["day_start_equity"], state["equity"])
 
 with open(STATE_FILE, "w") as f:
     json.dump(state, f, indent=2)
 
-print(f"Risk state updated — equity £{old_equity:.2f} → £{state['equity']:.2f}  HWM=£{state['hwm']:.2f}")
-print("Done. Restart the bot to pick up the restored state.")
+print(f"Risk state: equity £{old_equity:.2f} → £{state['equity']:.2f}  HWM=£{state['hwm']:.2f}")
+print("Done. Redeploy the bot to pick up the restored state.")
