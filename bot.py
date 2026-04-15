@@ -209,7 +209,7 @@ class TradingBot:
         self.collector = DataCollector(self.client, data_dir=self.data_dir)
         self.analyzer  = Analyzer(data_dir=self.data_dir, results_dir=self.data_dir)
         self.strategy  = TradingStrategy(self.cfg)
-        self.risk      = RiskManager(self.cfg)
+        self.risk      = RiskManager(self.cfg, data_dir=self.data_dir)
         self.logger    = TradeLogger(self.cfg["logging"]["trades_file"])
         self._tick_count = 0
         # slot_key → original SL price for positions tightened ahead of news

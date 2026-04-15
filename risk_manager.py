@@ -12,8 +12,10 @@ Key changes vs v1:
   - Daily loss halt uses absolute £ amount, not percentage
 """
 
+import json
 import logging
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, asdict
 from typing import Optional, Dict, Tuple
 from datetime import datetime, timezone
 
@@ -55,9 +57,10 @@ class Position:
 
 class RiskManager:
 
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict, data_dir: str = "/data"):
         rc = cfg["risk"]
         sc = cfg["strategy"]
+        self._state_path = os.path.join(data_dir, "risk_state.json")
 
         self.initial_capital    = rc["initial_capital"]      # £100
         self.sl_atr_mult        = rc["stop_loss_atr_mult"]
@@ -95,6 +98,48 @@ class RiskManager:
         self.short_tfs: list = tf_tiers.get("short", ["5m", "15m"])
         self.long_tfs:  list = tf_tiers.get("long",  ["1h", "4h", "1d"])
 
+        self._load_state()
+
+    # ── State persistence ─────────────────────────────────────────────────────
+
+    def _save_state(self):
+        """Write equity, HWM, daily tracking and open positions to disk."""
+        try:
+            positions = {}
+            for slot_key, pos in self.open_positions.items():
+                positions[slot_key] = asdict(pos)
+            state = {
+                "equity":           self.equity,
+                "hwm":              self.hwm,
+                "day_start_equity": self.day_start_equity,
+                "today":            self.today.isoformat(),
+                "open_positions":   positions,
+            }
+            os.makedirs(os.path.dirname(self._state_path), exist_ok=True)
+            with open(self._state_path, "w") as f:
+                json.dump(state, f, indent=2)
+        except Exception as exc:
+            logger.warning("Could not save risk state: %s", exc)
+
+    def _load_state(self):
+        """Restore equity, HWM, daily tracking and open positions from disk."""
+        if not os.path.exists(self._state_path):
+            return
+        try:
+            with open(self._state_path) as f:
+                state = json.load(f)
+            self.equity           = state["equity"]
+            self.hwm              = state["hwm"]
+            self.day_start_equity = state["day_start_equity"]
+            self.today            = datetime.fromisoformat(state["today"]).date()
+            for slot_key, pos_data in state.get("open_positions", {}).items():
+                self.open_positions[slot_key] = Position(**pos_data)
+            n = len(self.open_positions)
+            logger.info("✅ Risk state restored — equity=£%.2f  HWM=£%.2f  open=%d",
+                        self.equity, self.hwm, n)
+        except Exception as exc:
+            logger.warning("Could not restore risk state (%s) — starting fresh.", exc)
+
     # ── Equity ────────────────────────────────────────────────────────────────
 
     def risk_amount_today(self) -> float:
@@ -123,6 +168,7 @@ class RiskManager:
         # Advance HWM whenever equity sets a new high
         if new_equity > self.hwm:
             self.hwm = new_equity
+        self._save_state()
 
     def daily_loss(self) -> float:
         return self.day_start_equity - self.equity   # positive = loss
@@ -395,6 +441,7 @@ class RiskManager:
             pos.side.upper(), pos.pair, pos.entry_price,
             pos.stop_loss, pos.take_profit, pos.rr_ratio, pos.quantity, pos.leverage,
         )
+        self._save_state()
 
     def close_position(self, pair: str, exit_price: float) -> Optional[dict]:
         pos = self.open_positions.pop(pair, None)
@@ -432,6 +479,7 @@ class RiskManager:
         else:
             wick_breach = 1 if (pos.entry_candle_high > 0 and worst_price > pos.entry_candle_high) else 0
 
+        self._save_state()
         return {
             "pair":              pair,
             "side":              pos.side,
