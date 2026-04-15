@@ -1266,12 +1266,18 @@ class TradingBot:
 
             self.risk.update_excursion(slot_key, price)
 
-            # In paper mode check candle wicks so SL/TP hits aren't missed between monitor cycles
+            # In paper mode check candle wicks so SL/TP hits aren't missed between monitor cycles.
+            # Only use candles that closed AFTER entry — pre-entry wicks must be ignored.
             if self.paper and len(df) >= 2:
-                last = df.iloc[-2]   # last fully closed candle
-                exit_reason = self.risk.should_exit(slot_key, price,
-                                                    candle_high=float(last["high"]),
-                                                    candle_low=float(last["low"]))
+                entry_dt = pd.Timestamp(pos.entry_time).tz_localize("UTC") if pd.Timestamp(pos.entry_time).tzinfo is None else pd.Timestamp(pos.entry_time)
+                post_entry = df[df["timestamp"] > entry_dt]
+                if not post_entry.empty:
+                    last = post_entry.iloc[-1]
+                    exit_reason = self.risk.should_exit(slot_key, price,
+                                                        candle_high=float(last["high"]),
+                                                        candle_low=float(last["low"]))
+                else:
+                    exit_reason = self.risk.should_exit(slot_key, price)
             else:
                 exit_reason = self.risk.should_exit(slot_key, price)
 
