@@ -1266,12 +1266,24 @@ class TradingBot:
 
             self.risk.update_excursion(slot_key, price)
 
-            exit_reason = self.risk.should_exit(slot_key, price)
+            # In paper mode check candle wicks so SL/TP hits aren't missed between monitor cycles
+            if self.paper and len(df) >= 2:
+                last = df.iloc[-2]   # last fully closed candle
+                exit_reason = self.risk.should_exit(slot_key, price,
+                                                    candle_high=float(last["high"]),
+                                                    candle_low=float(last["low"]))
+            else:
+                exit_reason = self.risk.should_exit(slot_key, price)
 
             if exit_reason in ("stop_loss", "take_profit"):
-                self.log.info("🚨 %s  %s[%s]  @ £%.4f", exit_reason.upper(), symbol, tf_label, price)
-                self._close_pos(symbol, pos.quantity, price, pos.side)
-                trade = self.risk.close_position(slot_key, price)
+                # In paper mode use the exact SL/TP level as exit price (wick fill)
+                if self.paper:
+                    exit_price = pos.stop_loss if exit_reason == "stop_loss" else pos.take_profit
+                else:
+                    exit_price = price
+                self.log.info("🚨 %s  %s[%s]  @ £%.4f", exit_reason.upper(), symbol, tf_label, exit_price)
+                self._close_pos(symbol, pos.quantity, exit_price, pos.side)
+                trade = self.risk.close_position(slot_key, exit_price)
                 if trade:
                     trade["slot_key"] = slot_key
                     self.logger.log_trade(trade, self.risk.equity, exit_reason)

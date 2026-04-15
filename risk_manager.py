@@ -408,7 +408,13 @@ class RiskManager:
         pos.mae_pct = max(pos.mae_pct, adverse)
         pos.mfe_pct = max(pos.mfe_pct, favorable)
 
-    def should_exit(self, pair: str, current_price: float) -> Optional[str]:
+    def should_exit(self, pair: str, current_price: float,
+                    candle_high: float = 0.0, candle_low: float = 0.0) -> Optional[str]:
+        """
+        Returns exit reason or None.
+        candle_high / candle_low: when provided (paper mode), also checks whether
+        the candle wick breached SL or TP so wicks aren't missed between checks.
+        """
         pos = self.open_positions.get(pair)
         if not pos:
             return None
@@ -416,19 +422,21 @@ class RiskManager:
         if pos.candles_held < self.min_holding:
             return None
         if pos.side == "long":
-            if current_price <= pos.stop_loss:
-                return "stop_loss"
-            if not pos.tp1_hit and pos.tp1_price > 0 and current_price >= pos.tp1_price:
-                return "tp1"                    # partial close — trade stays open
-            if current_price >= pos.take_profit:
-                return "take_profit"
+            sl_hit = current_price <= pos.stop_loss or (candle_low  > 0 and candle_low  <= pos.stop_loss)
+            tp_hit = current_price >= pos.take_profit or (candle_high > 0 and candle_high >= pos.take_profit)
+            tp1_hit = (not pos.tp1_hit and pos.tp1_price > 0 and
+                       (current_price >= pos.tp1_price or (candle_high > 0 and candle_high >= pos.tp1_price)))
+            if sl_hit:  return "stop_loss"
+            if tp1_hit: return "tp1"
+            if tp_hit:  return "take_profit"
         else:
-            if current_price >= pos.stop_loss:
-                return "stop_loss"
-            if not pos.tp1_hit and pos.tp1_price > 0 and current_price <= pos.tp1_price:
-                return "tp1"
-            if current_price <= pos.take_profit:
-                return "take_profit"
+            sl_hit = current_price >= pos.stop_loss or (candle_high > 0 and candle_high >= pos.stop_loss)
+            tp_hit = current_price <= pos.take_profit or (candle_low  > 0 and candle_low  <= pos.take_profit)
+            tp1_hit = (not pos.tp1_hit and pos.tp1_price > 0 and
+                       (current_price <= pos.tp1_price or (candle_low > 0 and candle_low <= pos.tp1_price)))
+            if sl_hit:  return "stop_loss"
+            if tp1_hit: return "tp1"
+            if tp_hit:  return "take_profit"
         return None
 
     # ── Position registry ─────────────────────────────────────────────────────
