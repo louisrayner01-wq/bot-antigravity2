@@ -1273,7 +1273,7 @@ class TradingBot:
             # In paper mode check candle wicks so SL/TP hits aren't missed between monitor cycles.
             # Only use candles that closed AFTER entry — pre-entry wicks must be ignored.
             if self.paper and len(df) >= 2:
-                entry_dt = pd.Timestamp(pos.entry_time).tz_localize("UTC") if pd.Timestamp(pos.entry_time).tzinfo is None else pd.Timestamp(pos.entry_time)
+                entry_dt = pd.Timestamp(pos.entry_time).tz_localize(None) if pd.Timestamp(pos.entry_time).tzinfo is not None else pd.Timestamp(pos.entry_time)
                 post_entry = df[df["timestamp"] > entry_dt]
                 if not post_entry.empty:
                     last = post_entry.iloc[-1]
