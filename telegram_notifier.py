@@ -68,3 +68,25 @@ def notify_close(symbol: str, side: str, timeframe_label: str,
         f"P&L    : <b>{pct_account:+.2f}% of account</b>"
     )
     _send(text)
+
+
+def notify_model_alert(slot: str, alert_type: str, detail: str):
+    """
+    Send a model health alert. Called for:
+      • signal_drought  — slot has been silent for too long
+      • confidence_drift — model confidence collapsing vs baseline
+      • monthly_retrain  — scheduled retrain completed
+    """
+    icons = {
+        "signal_drought":   "⚠️",
+        "confidence_drift": "📉",
+        "monthly_retrain":  "🔄",
+    }
+    icon = icons.get(alert_type, "ℹ️")
+    label = alert_type.replace("_", " ").title()
+    text = (
+        f"<b>{icon} MODEL HEALTH  {label}</b>\n"
+        f"Slot   : {slot}\n"
+        f"Detail : {detail}"
+    )
+    _send(text)

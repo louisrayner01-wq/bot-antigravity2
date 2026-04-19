@@ -43,6 +43,8 @@ class Position:
     mfe_pct:            float = 0.0   # Max Favorable Excursion as fraction of entry
     entry_candle_low:   float = 0.0   # Low of the entry candle (wick level for longs)
     entry_candle_high:  float = 0.0   # High of the entry candle (wick level for shorts)
+    # ── Model metadata ────────────────────────────────────────────────────────
+    confidence:         float = 0.0   # Model probability at entry (0–1)
 
     @property
     def rr_ratio(self) -> float:
@@ -495,6 +497,7 @@ class RiskManager:
             "exit_price":        exit_price,
             "quantity":          pos.quantity,
             "leverage":          pos.leverage,
+            "confidence":        pos.confidence,
             "pnl_pct":           pnl_pct,
             "pnl_usdt":          pnl_usdt,
             "candles_held":      pos.candles_held,

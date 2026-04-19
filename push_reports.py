@@ -256,6 +256,81 @@ def _compute_temporal(trades: list) -> dict:
     return {"by_dow": by_dow, "by_month": dict(sorted(by_month.items()))}
 
 
+# ── Live trade report ─────────────────────────────────────────────────────────
+
+def build_live_trades(trades_file: str) -> str:
+    """
+    Build a markdown report of all live trades from the CSV log,
+    grouped by date, showing slot, side, confidence, outcome and PnL.
+    """
+    if not os.path.exists(trades_file):
+        return "# Live Trades\n\n_No trades logged yet._\n"
+
+    import csv as _csv
+    rows = []
+    with open(trades_file, newline="") as f:
+        reader = _csv.DictReader(f)
+        for row in reader:
+            rows.append(row)
+
+    if not rows:
+        return "# Live Trades\n\n_No trades logged yet._\n"
+
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    lines = [
+        "# Live Trades",
+        f"_Updated: {now_str}_",
+        f"_Total: {len(rows)} trades_",
+        "",
+    ]
+
+    wins      = sum(1 for r in rows if float(r.get("pnl_usdt", 0)) > 0)
+    losses    = len(rows) - wins
+    total_pnl = sum(float(r.get("pnl_usdt", 0)) for r in rows)
+    wr        = wins / len(rows) * 100 if rows else 0
+
+    lines += [
+        f"**Overall: {wins}W / {losses}L  ({wr:.0f}% WR)  Total PnL: {total_pnl:+.2f} USDT**",
+        "",
+    ]
+
+    # Group by date — most recent first
+    by_date: dict = {}
+    for r in rows:
+        date = r.get("timestamp", "")[:10]
+        by_date.setdefault(date, []).append(r)
+
+    for date in sorted(by_date.keys(), reverse=True):
+        day_rows = by_date[date]
+        day_wins = sum(1 for r in day_rows if float(r.get("pnl_usdt", 0)) > 0)
+        day_pnl  = sum(float(r.get("pnl_usdt", 0)) for r in day_rows)
+        day_wr   = day_wins / len(day_rows) * 100 if day_rows else 0
+        lines += [
+            f"## {date}  —  {len(day_rows)} trades  |  {day_wr:.0f}% WR  |  {day_pnl:+.2f} USDT",
+            "",
+            "| Time (UTC) | Slot | Side | Conf | Outcome | PnL USDT | PnL % | Equity |",
+            "|------------|------|------|------|---------|----------|-------|--------|",
+        ]
+        for r in day_rows:
+            time_str = r.get("timestamp", "")[11:16]
+            slot     = r.get("slot_key") or r.get("pair", "")
+            side     = r.get("side", "").upper()
+            conf_raw = r.get("confidence", "")
+            conf_str = f"{float(conf_raw):.2f}" if conf_raw else "—"
+            exit_rsn = r.get("exit_reason", "")
+            pnl_u    = float(r.get("pnl_usdt", 0))
+            pnl_p    = float(r.get("pnl_pct",  0))
+            equity   = float(r.get("equity_after", 0))
+            outcome  = "✅ TP" if exit_rsn == "take_profit" else "❌ SL"
+            lines.append(
+                f"| {time_str} | {slot} | {side} | {conf_str} | {outcome} | "
+                f"{pnl_u:+.2f} | {pnl_p:+.2f}% | £{equity:.2f} |"
+            )
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def push_reports(data_dir: str = "/data"):
@@ -266,24 +341,28 @@ def push_reports(data_dir: str = "/data"):
         log.warning("GITHUB_TOKEN or GITHUB_REPO not set — skipping report push.")
         return
 
+    now_str     = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    trades_file = os.path.join(data_dir, "trades.csv")
+
+    # ── Live trades — pushed on every call so the report stays current ────────
+    live_md = build_live_trades(trades_file)
+    _push_file(repo, "reports/live_trades.md", live_md,
+               f"reports: live trades ({now_str})", token)
+
+    # ── Backtest summary — only if results file exists ────────────────────────
     bt_path = os.path.join(data_dir, "backtest_results.json")
-    if not os.path.exists(bt_path):
-        log.warning("backtest_results.json not found — skipping report push.")
-        return
+    if os.path.exists(bt_path):
+        with open(bt_path) as f:
+            data = json.load(f)
+        results = data.get("results", [])
 
-    with open(bt_path) as f:
-        data    = json.load(f)
-    results = data.get("results", [])
+        summary_md  = build_backtest_summary(results)
+        temporal_md = build_temporal_breakdown(results)
 
-    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-
-    summary_md  = build_backtest_summary(results)
-    temporal_md = build_temporal_breakdown(results)
-
-    _push_file(repo, "reports/backtest_summary.md",    summary_md,
-               f"reports: update backtest summary ({now_str})", token)
-    _push_file(repo, "reports/temporal_breakdown.md",  temporal_md,
-               f"reports: update temporal breakdown ({now_str})", token)
+        _push_file(repo, "reports/backtest_summary.md",   summary_md,
+                   f"reports: update backtest summary ({now_str})", token)
+        _push_file(repo, "reports/temporal_breakdown.md", temporal_md,
+                   f"reports: update temporal breakdown ({now_str})", token)
 
     log.info("✅ Reports pushed to github.com/%s/reports/", repo)
 

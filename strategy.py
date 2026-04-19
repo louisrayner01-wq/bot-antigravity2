@@ -137,6 +137,116 @@ class TradeStats:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Confidence score tracker — detects model drift between market regimes
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ConfidenceTracker:
+    """
+    Records raw model confidence (max of buy_p / sell_p) on every prediction,
+    regardless of whether the signal crossed the entry threshold.
+
+    Two uses:
+      1. Drift detection — compare recent 14-day avg vs 90-day baseline.
+         A meaningful drop signals the model has lost conviction in the current
+         market regime and needs retraining.
+      2. Signal drought — detect when a slot hasn't generated any signal
+         (confidence >= min_signal_confidence) for too long.
+    """
+
+    # Minimum confidence to count as a "signal seen" for drought tracking.
+    # Deliberately lower than the 0.55/0.70 entry threshold so we catch the
+    # case where the model is generating weak signals vs generating nothing.
+    MIN_SIGNAL_CONFIDENCE = 0.45
+
+    def __init__(self):
+        # slot → list of {"ts": ISO string, "confidence": float}
+        self._log: Dict[str, List[Dict]] = {}
+
+    def record(self, slot: str, confidence: float) -> None:
+        """Call on every predict() call with max(buy_p, sell_p)."""
+        from datetime import datetime, timezone
+        if slot not in self._log:
+            self._log[slot] = []
+        self._log[slot].append({
+            "ts":         datetime.now(timezone.utc).isoformat(),
+            "confidence": round(float(confidence), 4),
+        })
+        # Keep at most 90 days of 15-min samples ≈ 8,640 entries per slot
+        if len(self._log[slot]) > 9_000:
+            self._log[slot] = self._log[slot][-9_000:]
+
+    def last_signal_ts(self, slot: str) -> Optional[str]:
+        """
+        Returns ISO timestamp of the last time this slot had confidence >=
+        MIN_SIGNAL_CONFIDENCE, or None if never recorded.
+        """
+        entries = self._log.get(slot, [])
+        for entry in reversed(entries):
+            if entry["confidence"] >= self.MIN_SIGNAL_CONFIDENCE:
+                return entry["ts"]
+        return None
+
+    def detect_drift(self,
+                     slot: str,
+                     recent_days: int = 14,
+                     baseline_days: int = 90,
+                     threshold: float = 0.85) -> Tuple[bool, float, float]:
+        """
+        Compare recent average confidence vs long-term baseline.
+
+        Returns (is_drifting, recent_avg, baseline_avg).
+        is_drifting=True when recent_avg < baseline_avg * threshold.
+        Requires at least 20 recent samples and 50 baseline samples to fire.
+        """
+        from datetime import datetime, timezone, timedelta
+        entries = self._log.get(slot, [])
+        if not entries:
+            return False, 0.0, 0.0
+
+        now      = datetime.now(timezone.utc)
+        recent_cutoff   = (now - timedelta(days=recent_days)).isoformat()
+        baseline_cutoff = (now - timedelta(days=baseline_days)).isoformat()
+
+        recent   = [e["confidence"] for e in entries if e["ts"] >= recent_cutoff]
+        baseline = [e["confidence"] for e in entries if e["ts"] >= baseline_cutoff]
+
+        if len(recent) < 20 or len(baseline) < 50:
+            return False, 0.0, 0.0
+
+        recent_avg   = float(np.mean(recent))
+        baseline_avg = float(np.mean(baseline))
+
+        if baseline_avg == 0:
+            return False, recent_avg, baseline_avg
+
+        is_drifting = recent_avg < baseline_avg * threshold
+        return is_drifting, recent_avg, baseline_avg
+
+    def save(self, path: str) -> None:
+        """Persist confidence log to JSON so it survives bot restarts."""
+        try:
+            import json
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "w") as f:
+                json.dump(self._log, f)
+        except Exception as exc:
+            logger.warning("ConfidenceTracker: could not save to %s: %s", path, exc)
+
+    def load(self, path: str) -> None:
+        """Load a previously saved confidence log."""
+        try:
+            import json
+            if os.path.exists(path):
+                with open(path) as f:
+                    self._log = json.load(f)
+                total = sum(len(v) for v in self._log.values())
+                logger.info("ConfidenceTracker: loaded %d entries across %d slots",
+                            total, len(self._log))
+        except Exception as exc:
+            logger.warning("ConfidenceTracker: could not load from %s: %s", path, exc)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Dynamic retraining schedule
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -219,6 +329,7 @@ class TradingStrategy:
         self.trades_since_retrain = 0
         self.stats = TradeStats(min_trades=self.min_ev_trades)
         self.feature_importance: Dict[str, float] = {}
+        self.conf_tracker = ConfidenceTracker()
 
         # Analysis recommendations (loaded from /data/analysis_results.json)
         self.analysis: Optional[Dict] = None
@@ -639,14 +750,25 @@ class TradingStrategy:
 
     def trade_is_worth_it(self, symbol: str) -> Tuple[bool, str]:
         """
-        EV gate disabled — backtest edge is trusted over live sample noise.
-        Always returns True so every signal that passes confidence + HTF
-        filters is taken, matching backtest behaviour exactly.
+        EV gate — only blocks trades once min_ev_trades have been recorded.
+        Below that threshold every signal is taken (warmup period).
+        Thresholds: min_win_rate=0.40 (breakeven at 1.59 R/R is 38.6%),
+                    min_ev_trades=30  (statistically meaningful sample).
         """
         ev, win_rate, avg_rr = self.stats.ev_and_winrate(symbol)
-        if ev is not None:
-            return True, (f"EV={ev*100:+.3f}%  win_rate={win_rate*100:.1f}%  avg_rr={avg_rr:.2f}")
-        return True, "EV gate disabled — taking all signals"
+        if ev is None:
+            # Not enough trades yet — warmup period, take all signals
+            history = self.stats.for_pair(symbol)
+            return True, f"warming up ({len(history)}/{self.min_ev_trades} trades)"
+
+        if win_rate < self.min_win_rate:
+            return False, (f"WR {win_rate*100:.1f}% < min {self.min_win_rate*100:.0f}%  "
+                           f"EV={ev*100:+.3f}%  avg_rr={avg_rr:.2f}")
+        if ev < self.min_ev:
+            return False, (f"EV {ev*100:+.3f}% < min {self.min_ev*100:.3f}%  "
+                           f"WR={win_rate*100:.1f}%  avg_rr={avg_rr:.2f}")
+
+        return True, (f"EV={ev*100:+.3f}%  win_rate={win_rate*100:.1f}%  avg_rr={avg_rr:.2f}")
 
     # ── Outcome recording (triggers retraining) ───────────────────────────────
 

@@ -54,7 +54,7 @@ from mae_analyser   import MAEAnalyser
 from historical_mae import run_historical_mae
 from news_calendar  import (entries_blocked, stops_should_tighten,
                              next_event, NEWS_TIGHTEN_PCT)
-from telegram_notifier import notify_open, notify_close
+from telegram_notifier import notify_open, notify_close, notify_model_alert
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -215,6 +215,17 @@ class TradingBot:
         # slot_key → original SL price for positions tightened ahead of news
         # (breakeven moves are NOT stored here — they stay at breakeven after)
         self._news_tightened_sl: Dict[str, float] = {}
+
+        # ── Model health tracking ─────────────────────────────────────────────
+        # last_signal_ts: slot → datetime of last prediction with confidence
+        #   >= ConfidenceTracker.MIN_SIGNAL_CONFIDENCE (not just opened trades)
+        self._last_signal_ts:       Dict[str, datetime] = {}
+        # When the bot last ran a full forced retrain of all models
+        self._last_monthly_retrain: Optional[datetime]  = None
+        self._health_path = os.path.join(
+            self.cfg.get("data", {}).get("data_dir", "/data"), "model_health.json"
+        )
+        self._load_health_state()
 
     # ── Dashboard state ───────────────────────────────────────────────────────
 
@@ -384,6 +395,10 @@ class TradingBot:
         self.log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         self.log.info("  STARTUP PIPELINE  (FUTURES mode)")
         self.log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+        # ── Step 0: Load confidence tracker history ──────────────────────────
+        conf_log_path = os.path.join(self.data_dir, "confidence_log.json")
+        self.strategy.conf_tracker.load(conf_log_path)
 
         # ── Step 0a: Restore equity/HWM from last saved state ────────────────
         state_path = os.path.join(self.data_dir, "state.json")
@@ -1145,10 +1160,11 @@ class TradingBot:
                     order_id=order_id,
                     entry_candle_low=entry_candle_low,
                     entry_candle_high=entry_candle_high,
+                    confidence=confidence,
                 )
                 self.risk.open_position(pos, slot_key=slot_key)
-                self.log.info("🟢 LONG  %s[%s]  qty=%.5f @ £%.4f  SL=£%.4f  TP=£%.4f",
-                              symbol, timeframe_label, qty, price, sl, tp)
+                self.log.info("🟢 LONG  %s[%s]  qty=%.5f @ £%.4f  SL=£%.4f  TP=£%.4f  conf=%.2f",
+                              symbol, timeframe_label, qty, price, sl, tp, confidence)
                 notify_open(symbol, "long", timeframe_label, price, sl, tp,
                             self.risk.risk_amount_today(), self.risk.equity)
                 return True
@@ -1166,15 +1182,203 @@ class TradingBot:
                     order_id=order_id,
                     entry_candle_low=entry_candle_low,
                     entry_candle_high=entry_candle_high,
+                    confidence=confidence,
                 )
                 self.risk.open_position(pos, slot_key=slot_key)
-                self.log.info("🔴 SHORT %s[%s]  qty=%.5f @ £%.4f  SL=£%.4f  TP=£%.4f",
-                              symbol, timeframe_label, qty, price, sl, tp)
+                self.log.info("🔴 SHORT %s[%s]  qty=%.5f @ £%.4f  SL=£%.4f  TP=£%.4f  conf=%.2f",
+                              symbol, timeframe_label, qty, price, sl, tp, confidence)
                 notify_open(symbol, "short", timeframe_label, price, sl, tp,
                             self.risk.risk_amount_today(), self.risk.equity)
                 return True
 
         return False
+
+    # ── Model health state persistence ───────────────────────────────────────
+
+    def _load_health_state(self) -> None:
+        try:
+            if os.path.exists(self._health_path):
+                with open(self._health_path) as f:
+                    state = json.load(f)
+                lmr = state.get("last_monthly_retrain")
+                if lmr:
+                    self._last_monthly_retrain = datetime.fromisoformat(lmr)
+                sig_ts = state.get("last_signal_ts", {})
+                for slot, ts_str in sig_ts.items():
+                    self._last_signal_ts[slot] = datetime.fromisoformat(ts_str)
+                self.log.info("💾 Health state loaded (last retrain: %s)",
+                              self._last_monthly_retrain or "never")
+        except Exception as exc:
+            self.log.debug("Could not load health state: %s", exc)
+
+    def _save_health_state(self) -> None:
+        try:
+            state = {
+                "last_monthly_retrain": (
+                    self._last_monthly_retrain.isoformat()
+                    if self._last_monthly_retrain else None
+                ),
+                "last_signal_ts": {
+                    slot: ts.isoformat()
+                    for slot, ts in self._last_signal_ts.items()
+                },
+            }
+            with open(self._health_path, "w") as f:
+                json.dump(state, f, indent=2)
+        except Exception as exc:
+            self.log.debug("Could not save health state: %s", exc)
+
+    # ── Model health checks ───────────────────────────────────────────────────
+
+    def _monthly_retrain(self) -> None:
+        """
+        Force a full retrain of all strategy models on the latest data.
+        Called automatically every 28 days from _check_model_health().
+        The CSVs are kept fresh by accumulate_data() so training data is
+        always current — no extra fetch needed.
+
+        Old model files are moved to a timestamped backup folder rather than
+        deleted.  If the new models turn out to be worse, copy the backup
+        .joblib files back into models_dir and restart the bot — it will load
+        them on startup via _try_load_symbol_models().
+        """
+        self.log.info("🔄 Monthly retrain — backing up models and retraining on latest data…")
+
+        models_dir = self.cfg["logging"]["models_dir"]
+        timestamp  = utcnow().strftime("%Y-%m-%d_%H%M")
+        backup_dir = os.path.join(models_dir, f"backup_{timestamp}")
+
+        # ── Back up existing .joblib files ────────────────────────────────────
+        backed_up = 0
+        if os.path.isdir(models_dir):
+            joblib_files = [f for f in os.listdir(models_dir) if f.endswith(".joblib")]
+            if joblib_files:
+                os.makedirs(backup_dir, exist_ok=True)
+                for fname in joblib_files:
+                    try:
+                        import shutil
+                        shutil.copy2(
+                            os.path.join(models_dir, fname),
+                            os.path.join(backup_dir, fname),
+                        )
+                        backed_up += 1
+                    except Exception as exc:
+                        self.log.warning("Could not back up model %s: %s", fname, exc)
+                self.log.info("💾 Backed up %d model file(s) → %s", backed_up, backup_dir)
+
+                # ── Prune old backups — keep only the 3 most recent ──────────
+                # Prevents the volume filling up with months of backups.
+                try:
+                    all_backups = sorted([
+                        d for d in os.listdir(models_dir)
+                        if d.startswith("backup_") and
+                        os.path.isdir(os.path.join(models_dir, d))
+                    ])
+                    for old in all_backups[:-3]:   # keep last 3
+                        import shutil
+                        shutil.rmtree(os.path.join(models_dir, old), ignore_errors=True)
+                        self.log.info("🗑️  Pruned old backup: %s", old)
+                except Exception as exc:
+                    self.log.debug("Could not prune old backups: %s", exc)
+
+        # ── Clear in-memory models so _initial_train() trains from scratch ────
+        self.strategy.symbol_models.clear()
+        self.strategy.symbol_scalers.clear()
+        self.strategy.symbol_features.clear()
+        self.strategy.model = None
+
+        self._initial_train()
+        self._last_monthly_retrain = utcnow()
+        self._save_health_state()
+        self.log.info("✅ Monthly retrain complete  (backup: %s)", backup_dir if backed_up else "none")
+        notify_model_alert(
+            slot="ALL",
+            alert_type="monthly_retrain",
+            detail=(
+                f"All {len(self.active_strategies)} models retrained on latest rolling data. "
+                f"Previous models backed up → models/backup_{timestamp}"
+            ),
+        )
+
+    def _check_model_health(self) -> None:
+        """
+        Run three health checks on every 4h tick:
+
+        1. Monthly retrain — if it has been 28+ days since the last forced
+           retrain, wipe and retrain all models on the fresh rolling CSV data.
+           This prevents regime-drift where a model trained months ago stops
+           generating signals in a changed market.
+
+        2. Signal drought — alert via Telegram if any active strategy slot
+           hasn't generated a prediction with confidence >=
+           ConfidenceTracker.MIN_SIGNAL_CONFIDENCE in the past 14 days.
+           A drought means the model has effectively gone silent.
+
+        3. Confidence drift — alert if a slot's recent 14-day average
+           confidence is < 85% of its 90-day baseline.  This is an early
+           warning before a full drought develops.
+        """
+        now = utcnow()
+        slots = [s["slot_key"] for s in self.active_strategies]
+
+        # ── 1. Monthly retrain ────────────────────────────────────────────────
+        retrain_interval_days = self.cfg.get("data", {}).get("retrain_interval_days", 28)
+        if self._last_monthly_retrain is None:
+            days_since = retrain_interval_days  # force on first check if never done
+        else:
+            days_since = (now.replace(tzinfo=None) -
+                          self._last_monthly_retrain.replace(tzinfo=None)).days
+        if days_since >= retrain_interval_days:
+            self.log.info("📅 Monthly retrain due (%d days since last — interval %d days)",
+                          days_since, retrain_interval_days)
+            try:
+                self._monthly_retrain()
+            except Exception as exc:
+                self.log.error("Monthly retrain failed: %s", exc)
+        else:
+            self.log.info("📅 Monthly retrain in %d day(s)",
+                          retrain_interval_days - days_since)
+
+        # ── 2. Signal drought check ───────────────────────────────────────────
+        drought_days = self.cfg.get("data", {}).get("signal_drought_days", 14)
+        for slot in slots:
+            last_ts_str = self.strategy.conf_tracker.last_signal_ts(slot)
+            if last_ts_str is None:
+                # Never recorded — only alert if bot has been running long enough
+                first_seen = self._last_signal_ts.get(slot)
+                if first_seen and (now.replace(tzinfo=None) -
+                                   first_seen.replace(tzinfo=None)).days >= drought_days:
+                    msg = f"No signal recorded ever (running {drought_days}+ days)"
+                    self.log.warning("⚠️  Signal drought  %s — %s", slot, msg)
+                    notify_model_alert(slot, "signal_drought", msg)
+                continue
+
+            last_ts = datetime.fromisoformat(last_ts_str).replace(tzinfo=None)
+            silent_days = (now.replace(tzinfo=None) - last_ts).days
+            if silent_days >= drought_days:
+                msg = f"No signal for {silent_days} days (last: {last_ts.strftime('%Y-%m-%d')})"
+                self.log.warning("⚠️  Signal drought  %s — %s", slot, msg)
+                notify_model_alert(slot, "signal_drought", msg)
+            else:
+                self.log.info("💓 %s  last signal %d day(s) ago", slot, silent_days)
+
+        # ── 3. Confidence drift check ─────────────────────────────────────────
+        for slot in slots:
+            is_drifting, recent_avg, baseline_avg = \
+                self.strategy.conf_tracker.detect_drift(slot)
+            if is_drifting:
+                msg = (f"Confidence collapsing: recent 14d avg={recent_avg:.3f} "
+                       f"vs 90d baseline={baseline_avg:.3f} "
+                       f"({recent_avg/baseline_avg*100:.0f}% of baseline)")
+                self.log.warning("📉 Confidence drift  %s — %s", slot, msg)
+                notify_model_alert(slot, "confidence_drift", msg)
+            elif baseline_avg > 0:
+                self.log.info("📊 %s  conf: recent=%.3f  baseline=%.3f",
+                              slot, recent_avg, baseline_avg)
+
+        # Persist confidence log so it survives restarts
+        conf_log_path = os.path.join(self.data_dir, "confidence_log.json")
+        self.strategy.conf_tracker.save(conf_log_path)
 
     # ── Exit monitor (runs every 5 min regardless of signal TF) ──────────────
 
@@ -1414,6 +1618,13 @@ class TradingBot:
                     signal, buy_p, sell_p, htf_direction
                 )
 
+            # Record raw confidence on every prediction — used for drift detection
+            # and signal drought monitoring, regardless of whether signal passed.
+            raw_confidence = max(buy_p, sell_p)
+            self.strategy.conf_tracker.record(slot_key, raw_confidence)
+            if raw_confidence >= self.strategy.conf_tracker.MIN_SIGNAL_CONFIDENCE:
+                self._last_signal_ts[slot_key] = utcnow()
+
             if signal == 0:
                 results.append(f"{name}[{tf_label}]→HOLD(b{buy_p:.2f}/s{sell_p:.2f})")
                 continue
@@ -1502,6 +1713,19 @@ class TradingBot:
                 self._run_mae_analysis()
             except Exception as exc:
                 self.log.warning("MAE analysis error: %s", exc)
+
+        # Model health: drought, drift, monthly retrain — runs every 4h tick
+        try:
+            self._check_model_health()
+        except Exception as exc:
+            self.log.warning("Model health check error: %s", exc)
+
+        # Push live trade report to GitHub so trades are visible without Railway access
+        try:
+            from push_reports import push_reports
+            push_reports(self.data_dir)
+        except Exception as exc:
+            self.log.debug("push_reports error (non-fatal): %s", exc)
 
         self._tick_count += 1
 

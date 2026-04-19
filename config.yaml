@@ -83,8 +83,8 @@ strategy:
 
   # ── Trade quality gates (BOTH must pass before entering a trade) ───────────
   min_ev:           0.001  # Minimum Expected Value (EV > 0.1 % per trade)
-  min_win_rate:     0.45   # Need at least 45 % historical win rate before trading
-  min_ev_trades:    10     # Minimum trades before EV gate is enforced
+  min_win_rate:     0.40   # Breakeven at 1.59 R/R is 38.6% — 40% gives a small buffer above it
+  min_ev_trades:    30     # Minimum trades before EV gate enforced — 30 is statistically meaningful
   min_strategy_accuracy: 0.52  # Min CV accuracy for a (symbol, TF) strategy to be traded
 
   # Strategies proven unprofitable or weak in backtest — blocked regardless of cv_accuracy.
@@ -223,6 +223,16 @@ data:
 
   # Analysis results older than this many days trigger a fresh analysis run
   analysis_stale_days:  9999  # strategies hardcoded via fixed_strategies — skip re-analysis on restart
+
+  # ── Model health settings ──────────────────────────────────────────────────
+  # retrain_interval_days: force a full model retrain this often (rolling window).
+  # Prevents regime drift where a model trained months ago stops generating
+  # signals as the market evolves.
+  retrain_interval_days:  28  # retrain all models every 4 weeks
+
+  # signal_drought_days: alert via Telegram if a strategy slot hasn't produced
+  # a prediction with confidence >= 0.45 for this many consecutive days.
+  signal_drought_days:    14  # 2 weeks silence = something is wrong
 
   # Signal timeframe bounds — analysis picks the best TF per symbol automatically.
   #

@@ -16,8 +16,8 @@ class TradeLogger:
     """Persists all trade data and prints performance summaries."""
 
     FIELDS = [
-        "timestamp", "pair", "side", "entry_price", "exit_price",
-        "quantity", "leverage", "pnl_pct", "pnl_usdt", "candles_held",
+        "timestamp", "pair", "slot_key", "side", "entry_price", "exit_price",
+        "quantity", "leverage", "confidence", "pnl_pct", "pnl_usdt", "candles_held",
         "exit_reason", "equity_after",
         # MAE / MFE — recorded per trade for stop-loss optimisation
         "mae_pct",      # Max Adverse Excursion as % of entry (e.g. 1.25 = 1.25%)
@@ -100,11 +100,13 @@ class TradeLogger:
         row = {
             "timestamp":    datetime.utcnow().isoformat(),
             "pair":         trade.get("pair", ""),
+            "slot_key":     trade.get("slot_key", ""),
             "side":         trade.get("side", ""),
             "entry_price":  round(trade.get("entry_price", 0), 4),
             "exit_price":   round(trade.get("exit_price", 0), 4),
             "quantity":     round(trade.get("quantity", 0), 6),
             "leverage":     trade.get("leverage", 1),
+            "confidence":   round(trade.get("confidence", 0.0), 4),
             "pnl_pct":      round(trade.get("pnl_pct", 0) * 100, 3),
             "pnl_usdt":     round(trade.get("pnl_usdt", 0), 2),
             "candles_held": trade.get("candles_held", 0),
