@@ -34,6 +34,7 @@ import logging
 import os
 import json
 import yaml
+import shutil
 from datetime import datetime, timezone
 
 def utcnow():
@@ -211,6 +212,35 @@ class TradingBot:
         self.strategy  = TradingStrategy(self.cfg)
         self.risk      = RiskManager(self.cfg, data_dir=self.data_dir)
         self.logger    = TradeLogger(self.cfg["logging"]["trades_file"])
+
+        # ── One-shot model backup restore (hobby accounts have no console) ──────
+        # Set RESTORE_MODEL_BACKUP=true in Railway Variables, redeploy, then remove it.
+        # Copies the most recent backup_* folder back over the live models so the
+        # original well-trained models are restored after a bad retrain.
+        if os.getenv("RESTORE_MODEL_BACKUP", "").lower() == "true":
+            try:
+                _models_dir = self.cfg.get("logging", {}).get("models_dir", "/data/models/")
+                _backups = sorted([
+                    d for d in os.listdir(_models_dir)
+                    if d.startswith("backup_") and os.path.isdir(os.path.join(_models_dir, d))
+                ], reverse=True)
+                if _backups:
+                    _src_dir = os.path.join(_models_dir, _backups[0])
+                    self.log.warning("⚠️  RESTORE_MODEL_BACKUP: restoring from %s", _src_dir)
+                    for _fname in os.listdir(_src_dir):
+                        if _fname.endswith(".joblib"):
+                            shutil.copy2(
+                                os.path.join(_src_dir, _fname),
+                                os.path.join(_models_dir, _fname)
+                            )
+                    # Reset last_monthly_retrain so health check knows models are fresh
+                    self._last_monthly_retrain = None
+                    self._save_health_state()
+                    self.log.warning("✅ Models restored from backup. Remove RESTORE_MODEL_BACKUP now.")
+                else:
+                    self.log.error("RESTORE_MODEL_BACKUP: no backup folders found in %s", _models_dir)
+            except Exception as _e:
+                self.log.error("RESTORE_MODEL_BACKUP failed: %s", _e)
 
         # ── One-shot equity override (hobby accounts have no console) ─────────
         # Set EQUITY_OVERRIDE=82.90 in Railway Variables, redeploy, then remove it.
