@@ -500,6 +500,12 @@ class TradingBot:
             self.strategy.reload_analysis()
             self._apply_analysis_recommendations()
             self._initial_train()
+            # Mark retrain timestamp so _check_model_health() doesn't fire
+            # another retrain immediately at the first 4h tick.  The 28-day
+            # interval starts from this deployment, not from "never".
+            if self._last_monthly_retrain is None:
+                self._last_monthly_retrain = utcnow()
+                self._save_health_state()
         except Exception as exc:
             self.log.error("Training error (continuing anyway): %s", exc)
 
