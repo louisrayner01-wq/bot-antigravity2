@@ -211,6 +211,23 @@ class TradingBot:
         self.strategy  = TradingStrategy(self.cfg)
         self.risk      = RiskManager(self.cfg, data_dir=self.data_dir)
         self.logger    = TradeLogger(self.cfg["logging"]["trades_file"])
+
+        # ── One-shot equity override (hobby accounts have no console) ─────────
+        # Set EQUITY_OVERRIDE=82.90 in Railway Variables, redeploy, then remove it.
+        _eq_override = os.getenv("EQUITY_OVERRIDE")
+        if _eq_override:
+            try:
+                _eq_val = float(_eq_override)
+                self.risk.equity           = _eq_val
+                self.risk.day_start_equity = _eq_val
+                self.risk._save_state()
+                self.log.warning(
+                    "⚠️  EQUITY_OVERRIDE applied — equity set to £%.2f. "
+                    "Remove EQUITY_OVERRIDE from Railway Variables now.",
+                    _eq_val,
+                )
+            except ValueError:
+                self.log.error("EQUITY_OVERRIDE value '%s' is not a valid number — ignored.", _eq_override)
         self._tick_count = 0
         # slot_key → original SL price for positions tightened ahead of news
         # (breakeven moves are NOT stored here — they stay at breakeven after)
@@ -400,27 +417,10 @@ class TradingBot:
         conf_log_path = os.path.join(self.data_dir, "confidence_log.json")
         self.strategy.conf_tracker.load(conf_log_path)
 
-        # ── Step 0a: Restore equity/HWM from last saved state ────────────────
-        state_path = os.path.join(self.data_dir, "state.json")
-        try:
-            if os.path.exists(state_path):
-                with open(state_path) as _sf:
-                    _saved = json.load(_sf)
-                _eq  = float(_saved.get("equity", 0))
-                _hwm = float(_saved.get("hwm", 0))
-                if _eq > 0:
-                    self.risk.equity          = _eq
-                    self.risk.day_start_equity = _eq
-                    if _hwm > 0:
-                        self.risk.hwm = _hwm
-                    self.log.info("💾 Restored equity=£%.4f  HWM=£%.4f from state.json",
-                                  self.risk.equity, self.risk.hwm)
-                else:
-                    self.log.info("💾 state.json found but equity=0 — keeping initial_capital")
-        except Exception as _exc:
-            self.log.warning("Could not restore state from state.json: %s", _exc)
-
-        # ── Step 0b: Set leverage for all pairs ──────────────────────────────
+        # ── Step 0a: Set leverage for all pairs ─────────────────────────────
+        # NOTE: equity/HWM are restored by RiskManager.__init__ from risk_state.json.
+        # A second restoration from state.json was removed — it caused silent equity
+        # corruption when state.json was stale (e.g. after a bad trade write).
         self._setup_leverage()
 
         # ── Step 1: Data collection ───────────────────────────────────────────
