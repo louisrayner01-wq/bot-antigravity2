@@ -1,5 +1,6 @@
 [build]
 builder = "nixpacks"
+watchPatterns = ["*.py", "*.yaml", "*.toml", "*.txt", "start.sh", "Dockerfile*"]
 
 [deploy]
 startCommand = "sh start.sh"
