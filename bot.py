@@ -1503,10 +1503,7 @@ class TradingBot:
             symbol = pos.pair
             tf_label = slot_key.replace(symbol + "_", "") if "_" in slot_key else self._sym_tf_label(symbol)
 
-            # Fetch enough candles to cover the full expected trade duration.
-            # 288 × 5m = 24 h — ensures wicks are never outside the window even
-            # for trades that have been open all day.
-            df = self.fetch_candles(symbol, limit=288)
+            df = self.fetch_candles(symbol, limit=10)
             if df is None or df.empty:
                 continue
             price = self.live_price(symbol, df)

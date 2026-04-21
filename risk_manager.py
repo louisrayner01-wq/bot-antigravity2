@@ -43,6 +43,11 @@ class Position:
     mfe_pct:            float = 0.0   # Max Favorable Excursion as fraction of entry
     entry_candle_low:   float = 0.0   # Low of the entry candle (wick level for longs)
     entry_candle_high:  float = 0.0   # High of the entry candle (wick level for shorts)
+    # ── Running wick extremes (paper mode) ────────────────────────────────────
+    # Accumulates max(high) / min(low) seen across all post-entry candles so a
+    # TP/SL wick that occurred outside the current fetch window is never missed.
+    seen_high:          float = 0.0   # highest candle high seen since entry
+    seen_low:           float = 0.0   # lowest candle low seen since entry
     # ── Model metadata ────────────────────────────────────────────────────────
     confidence:         float = 0.0   # Model probability at entry (0–1)
 
@@ -418,6 +423,11 @@ class RiskManager:
             favorable = max(0.0, (pos.entry_price - best_price)      / pos.entry_price)
         pos.mae_pct = max(pos.mae_pct, adverse)
         pos.mfe_pct = max(pos.mfe_pct, favorable)
+        # Accumulate absolute price extremes from candle wicks
+        if candle_high > 0:
+            pos.seen_high = max(pos.seen_high, candle_high)
+        if candle_low > 0 and candle_low < 1e15:
+            pos.seen_low = min(pos.seen_low, candle_low) if pos.seen_low > 0 else candle_low
 
     def should_exit(self, pair: str, current_price: float,
                     candle_high: float = 0.0, candle_low: float = 0.0) -> Optional[str]:
@@ -433,18 +443,30 @@ class RiskManager:
         if pos.candles_held < self.min_holding:
             return None
         if pos.side == "long":
-            sl_hit = current_price <= pos.stop_loss or (candle_low  > 0 and candle_low  <= pos.stop_loss)
-            tp_hit = current_price >= pos.take_profit or (candle_high > 0 and candle_high >= pos.take_profit)
+            sl_hit = (current_price <= pos.stop_loss
+                      or (candle_low  > 0 and candle_low  <= pos.stop_loss)
+                      or (pos.seen_low > 0 and pos.seen_low <= pos.stop_loss))
+            tp_hit = (current_price >= pos.take_profit
+                      or (candle_high > 0 and candle_high >= pos.take_profit)
+                      or (pos.seen_high > 0 and pos.seen_high >= pos.take_profit))
             tp1_hit = (not pos.tp1_hit and pos.tp1_price > 0 and
-                       (current_price >= pos.tp1_price or (candle_high > 0 and candle_high >= pos.tp1_price)))
+                       (current_price >= pos.tp1_price
+                        or (candle_high > 0 and candle_high >= pos.tp1_price)
+                        or (pos.seen_high > 0 and pos.seen_high >= pos.tp1_price)))
             if sl_hit:  return "stop_loss"
             if tp1_hit: return "tp1"
             if tp_hit:  return "take_profit"
         else:
-            sl_hit = current_price >= pos.stop_loss or (candle_high > 0 and candle_high >= pos.stop_loss)
-            tp_hit = current_price <= pos.take_profit or (candle_low  > 0 and candle_low  <= pos.take_profit)
+            sl_hit = (current_price >= pos.stop_loss
+                      or (candle_high > 0 and candle_high >= pos.stop_loss)
+                      or (pos.seen_high > 0 and pos.seen_high >= pos.stop_loss))
+            tp_hit = (current_price <= pos.take_profit
+                      or (candle_low  > 0 and candle_low  <= pos.take_profit)
+                      or (pos.seen_low > 0 and pos.seen_low <= pos.take_profit))
             tp1_hit = (not pos.tp1_hit and pos.tp1_price > 0 and
-                       (current_price <= pos.tp1_price or (candle_low > 0 and candle_low <= pos.tp1_price)))
+                       (current_price <= pos.tp1_price
+                        or (candle_low > 0 and candle_low <= pos.tp1_price)
+                        or (pos.seen_low > 0 and pos.seen_low <= pos.tp1_price)))
             if sl_hit:  return "stop_loss"
             if tp1_hit: return "tp1"
             if tp_hit:  return "take_profit"
