@@ -48,9 +48,74 @@ class TradeLogger:
         self.trades_file   = trades_file
         self.skipped_file  = trades_file.replace(".csv", "_skipped.csv")
         os.makedirs(os.path.dirname(trades_file) or ".", exist_ok=True)
+        self._migrate_csv()
         self._write_header()
         self._write_skipped_header()
         self.records: List[dict] = []
+
+    def _migrate_csv(self):
+        """
+        Fix column-shift bugs caused by adding fields (e.g. slot_key) to FIELDS
+        after the CSV was already created.  Reads the existing file header, and
+        if it doesn't match the current FIELDS list, rewrites the file with the
+        correct header while remapping existing rows.
+        """
+        if not os.path.exists(self.trades_file):
+            return
+
+        with open(self.trades_file, newline="") as f:
+            reader = csv.DictReader(f)
+            old_fields = reader.fieldnames or []
+            if list(old_fields) == self.FIELDS:
+                return   # already up to date
+            rows = list(reader)
+
+        logger.info("🔧 trades.csv header mismatch — migrating from %d to %d columns",
+                    len(old_fields), len(self.FIELDS))
+
+        # Symbols whose names appear in the slot_key column.
+        # Used to detect rows written with the new FIELDS order but read
+        # against the old header (where slot_key data ends up in 'side').
+        _pair_tokens = ("USDT_UMCBL", "USDT_SPBL", "USDT")
+
+        # Build a positional lookup for the OLD fields list so we can
+        # re-read new-format rows that were written in new FIELDS order.
+        new_fields_pos = {name: i for i, name in enumerate(self.FIELDS)}
+
+        fixed_rows = []
+        for row in rows:
+            side_val = row.get("side", "")
+            # Detect a row that was written with the NEW FIELDS order (slot_key
+            # at position 3) but read with the OLD header (slot_key value
+            # appears under the 'side' key).
+            if any(tok in str(side_val) for tok in _pair_tokens):
+                # The raw CSV values for this row are in NEW-FIELDS order.
+                # Re-read them positionally.
+                raw_vals = list(row.values())
+                # If extra columns were spilled into the DictReader's 'None' key
+                rest = row.get(None) or []
+                raw_vals = [v for v in raw_vals if v is not None] + list(rest)
+
+                new_row: dict = {}
+                for fname in self.FIELDS:
+                    idx = new_fields_pos.get(fname)
+                    new_row[fname] = raw_vals[idx] if idx is not None and idx < len(raw_vals) else ""
+                fixed_rows.append(new_row)
+            else:
+                # Old-format row — columns are correctly named, just add
+                # any new fields that weren't present with empty defaults.
+                new_row = {f: row.get(f, "") for f in self.FIELDS}
+                fixed_rows.append(new_row)
+
+        # Rewrite file with correct header
+        import shutil
+        backup = self.trades_file.replace(".csv", "_pre_migration.csv")
+        shutil.copy2(self.trades_file, backup)
+        with open(self.trades_file, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=self.FIELDS)
+            writer.writeheader()
+            writer.writerows(fixed_rows)
+        logger.info("✅ trades.csv migrated — %d rows fixed (backup: %s)", len(fixed_rows), backup)
 
     def _write_header(self):
         if not os.path.exists(self.trades_file):
