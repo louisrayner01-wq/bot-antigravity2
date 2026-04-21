@@ -527,7 +527,10 @@ class TradingBot:
         # Positions restored from risk_state.json have seen_high/seen_low = 0.
         # Do a one-time deep fetch (200 candles ≈ 16h) for each restored position
         # so any TP/SL wick that occurred while the bot was down is caught now.
-        self._catch_missed_exits()
+        try:
+            self._catch_missed_exits()
+        except Exception as exc:
+            self.log.error("Startup wick-check error (non-fatal): %s", exc)
 
         self.log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         self.log.info("  STARTUP COMPLETE — entering trading loop")
@@ -1497,24 +1500,41 @@ class TradingBot:
     def _catch_missed_exits(self):
         """
         Called once on startup. For each restored position that has no wick
-        history yet (seen_high == 0), fetch a deep candle window (200 candles
-        ≈ 16 h of 5m data) and immediately run the exit check.  This catches
-        any TP/SL wick that occurred while the bot was down between restarts.
+        history yet (seen_high == 0), fetch 200 5m candles (~16 h) and
+        immediately run the exit check so any TP/SL wick that occurred while
+        the bot was down is caught before entering the trading loop.
         """
         if not self.risk.open_positions:
             return
         for slot_key, pos in list(self.risk.open_positions.items()):
             if pos.seen_high != 0.0 and pos.seen_low != 0.0:
-                continue   # already has wick history
-            symbol = pos.pair
+                continue   # already has wick history from a previous cycle
+            symbol   = pos.pair
             tf_label = slot_key.replace(symbol + "_", "") if "_" in slot_key else self._sym_tf_label(symbol)
-            self.log.info("🔍 Startup wick-check for restored position %s", slot_key)
-            df = self.fetch_candles(symbol, limit=200)
+            # Extract signal TF from slot label (e.g. "5m+4h" → "5")
+            entry_tf_min = tf_label.split("+")[0].replace("m", "").replace("h", "")
+            try:
+                int(entry_tf_min)
+            except ValueError:
+                entry_tf_min = "5"   # safe default
+            self.log.info("🔍 Startup wick-check  %s  entry=£%.4f  SL=£%.4f  TP=£%.4f",
+                          slot_key, pos.entry_price, pos.stop_loss, pos.take_profit)
+            # Always fetch 5m candles — finest resolution for wick detection
+            df = self.fetch_candles(symbol, tf="5", limit=200)
             if df is None or df.empty:
+                self.log.warning("  No candles returned for %s — skipping", symbol)
                 continue
             price = self.live_price(symbol, df)
-            entry_dt = pd.Timestamp(pos.entry_time).tz_localize(None) if pd.Timestamp(pos.entry_time).tzinfo is not None else pd.Timestamp(pos.entry_time)
+            entry_dt = (pd.Timestamp(pos.entry_time).tz_localize(None)
+                        if pd.Timestamp(pos.entry_time).tzinfo is not None
+                        else pd.Timestamp(pos.entry_time))
             post_entry = df[df["timestamp"] > entry_dt]
+            self.log.info("  Live price=£%.4f  post-entry candles=%d  "
+                          "window_high=£%.4f  window_low=£%.4f",
+                          price,
+                          len(post_entry),
+                          float(post_entry["high"].max()) if not post_entry.empty else 0,
+                          float(post_entry["low"].min())  if not post_entry.empty else 0)
             if not post_entry.empty:
                 candle_high = float(post_entry["high"].max())
                 candle_low  = float(post_entry["low"].min())
@@ -1526,6 +1546,7 @@ class TradingBot:
             exit_reason = self.risk.should_exit(slot_key, price,
                                                 candle_high=candle_high,
                                                 candle_low=candle_low)
+            self.log.info("  Exit check result: %s", exit_reason or "hold")
             if exit_reason in ("stop_loss", "take_profit"):
                 exit_price = pos.stop_loss if exit_reason == "stop_loss" else pos.take_profit
                 self.log.info("🚨 Startup catch: %s  %s[%s]  @ £%.4f",
