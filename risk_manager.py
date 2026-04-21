@@ -388,7 +388,8 @@ class RiskManager:
             return False, f"equity (£{self.equity:.2f}) below minimum trade risk (£{self.risk_amount_today():.2f})"
         return True, "ok"
 
-    def update_excursion(self, pair: str, current_price: float):
+    def update_excursion(self, pair: str, current_price: float,
+                         candle_high: float = 0.0, candle_low: float = 0.0):
         """
         Called on every price check (every 5 min) to keep MAE and MFE current.
 
@@ -397,16 +398,24 @@ class RiskManager:
 
         For a long  → adverse = below entry, favorable = above entry
         For a short → adverse = above entry, favorable = below entry
+
+        candle_high / candle_low: when provided (paper mode), the worst-case wick
+        across all post-entry candles is used so wicks aren't missed.
         """
         pos = self.open_positions.get(pair)
         if not pos:
             return
         if pos.side == "long":
-            adverse   = max(0.0, (pos.entry_price - current_price) / pos.entry_price)
-            favorable = max(0.0, (current_price   - pos.entry_price) / pos.entry_price)
+            # Use candle wick if available — captures moves between poll cycles
+            best_price  = max(current_price, candle_high) if candle_high > 0 else current_price
+            worst_price = min(current_price, candle_low)  if candle_low  > 0 else current_price
+            adverse   = max(0.0, (pos.entry_price - worst_price) / pos.entry_price)
+            favorable = max(0.0, (best_price      - pos.entry_price) / pos.entry_price)
         else:
-            adverse   = max(0.0, (current_price   - pos.entry_price) / pos.entry_price)
-            favorable = max(0.0, (pos.entry_price - current_price)   / pos.entry_price)
+            best_price  = min(current_price, candle_low)  if candle_low  > 0 else current_price
+            worst_price = max(current_price, candle_high) if candle_high > 0 else current_price
+            adverse   = max(0.0, (worst_price     - pos.entry_price) / pos.entry_price)
+            favorable = max(0.0, (pos.entry_price - best_price)      / pos.entry_price)
         pos.mae_pct = max(pos.mae_pct, adverse)
         pos.mfe_pct = max(pos.mfe_pct, favorable)
 

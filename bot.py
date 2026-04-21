@@ -1503,29 +1503,36 @@ class TradingBot:
             symbol = pos.pair
             tf_label = slot_key.replace(symbol + "_", "") if "_" in slot_key else self._sym_tf_label(symbol)
 
-            df = self.fetch_candles(symbol, limit=10)
+            # Fetch enough candles to cover the full expected trade duration.
+            # 288 × 5m = 24 h — ensures wicks are never outside the window even
+            # for trades that have been open all day.
+            df = self.fetch_candles(symbol, limit=288)
             if df is None or df.empty:
                 continue
             price = self.live_price(symbol, df)
 
-            self.risk.update_excursion(slot_key, price)
-
             # In paper mode check candle wicks so SL/TP hits aren't missed between monitor cycles.
             # Only use candles that closed AFTER entry — pre-entry wicks must be ignored.
-            # Scan ALL post-entry candles (not just the last) so a TP/SL wick from
-            # any earlier candle in the window is never missed if price has since retraced.
+            # Scan ALL post-entry candles so a TP/SL wick from any candle in the
+            # window is caught even if price has since retraced.
             if self.paper and len(df) >= 2:
                 entry_dt = pd.Timestamp(pos.entry_time).tz_localize(None) if pd.Timestamp(pos.entry_time).tzinfo is not None else pd.Timestamp(pos.entry_time)
                 post_entry = df[df["timestamp"] > entry_dt]
                 if not post_entry.empty:
-                    # Worst-case wick across all post-entry candles
                     candle_high = float(post_entry["high"].max())
                     candle_low  = float(post_entry["low"].min())
-                    exit_reason = self.risk.should_exit(slot_key, price,
-                                                        candle_high=candle_high,
-                                                        candle_low=candle_low)
                 else:
-                    exit_reason = self.risk.should_exit(slot_key, price)
+                    candle_high = 0.0
+                    candle_low  = 0.0
+                # Update excursion with worst wick seen across the full window
+                self.risk.update_excursion(slot_key, price,
+                                           candle_high=candle_high,
+                                           candle_low=candle_low)
+                exit_reason = self.risk.should_exit(slot_key, price,
+                                                    candle_high=candle_high,
+                                                    candle_low=candle_low)
+            else:
+                self.risk.update_excursion(slot_key, price)
             else:
                 exit_reason = self.risk.should_exit(slot_key, price)
 
