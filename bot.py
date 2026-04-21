@@ -1533,7 +1533,6 @@ class TradingBot:
                                                     candle_low=candle_low)
             else:
                 self.risk.update_excursion(slot_key, price)
-            else:
                 exit_reason = self.risk.should_exit(slot_key, price)
 
             if exit_reason in ("stop_loss", "take_profit"):
