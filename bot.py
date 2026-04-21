@@ -523,6 +523,12 @@ class TradingBot:
         except Exception as exc:
             self.log.warning("MAE analysis error (non-fatal): %s", exc)
 
+        # ── Step 5: Catch missed TP/SL wicks on restored positions ──────────────
+        # Positions restored from risk_state.json have seen_high/seen_low = 0.
+        # Do a one-time deep fetch (200 candles ≈ 16h) for each restored position
+        # so any TP/SL wick that occurred while the bot was down is caught now.
+        self._catch_missed_exits()
+
         self.log.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         self.log.info("  STARTUP COMPLETE — entering trading loop")
         _ne = next_event()
@@ -1487,6 +1493,51 @@ class TradingBot:
                     )
                     pos.stop_loss = original_sl
             self._news_tightened_sl.clear()
+
+    def _catch_missed_exits(self):
+        """
+        Called once on startup. For each restored position that has no wick
+        history yet (seen_high == 0), fetch a deep candle window (200 candles
+        ≈ 16 h of 5m data) and immediately run the exit check.  This catches
+        any TP/SL wick that occurred while the bot was down between restarts.
+        """
+        if not self.risk.open_positions:
+            return
+        for slot_key, pos in list(self.risk.open_positions.items()):
+            if pos.seen_high != 0.0 and pos.seen_low != 0.0:
+                continue   # already has wick history
+            symbol = pos.pair
+            tf_label = slot_key.replace(symbol + "_", "") if "_" in slot_key else self._sym_tf_label(symbol)
+            self.log.info("🔍 Startup wick-check for restored position %s", slot_key)
+            df = self.fetch_candles(symbol, limit=200)
+            if df is None or df.empty:
+                continue
+            price = self.live_price(symbol, df)
+            entry_dt = pd.Timestamp(pos.entry_time).tz_localize(None) if pd.Timestamp(pos.entry_time).tzinfo is not None else pd.Timestamp(pos.entry_time)
+            post_entry = df[df["timestamp"] > entry_dt]
+            if not post_entry.empty:
+                candle_high = float(post_entry["high"].max())
+                candle_low  = float(post_entry["low"].min())
+            else:
+                candle_high, candle_low = 0.0, 0.0
+            self.risk.update_excursion(slot_key, price,
+                                       candle_high=candle_high,
+                                       candle_low=candle_low)
+            exit_reason = self.risk.should_exit(slot_key, price,
+                                                candle_high=candle_high,
+                                                candle_low=candle_low)
+            if exit_reason in ("stop_loss", "take_profit"):
+                exit_price = pos.stop_loss if exit_reason == "stop_loss" else pos.take_profit
+                self.log.info("🚨 Startup catch: %s  %s[%s]  @ £%.4f",
+                              exit_reason.upper(), symbol, tf_label, exit_price)
+                self._close_pos(symbol, pos.quantity, exit_price, pos.side)
+                trade = self.risk.close_position(slot_key, exit_price)
+                if trade:
+                    trade["slot_key"] = slot_key
+                    self.logger.log_trade(trade, self.risk.equity, exit_reason)
+                    notify_close(symbol, trade["side"], tf_label,
+                                 trade["entry_price"], trade["exit_price"],
+                                 trade["pnl_usdt"], self.risk.equity, exit_reason)
 
     def monitor_exits(self):
         """
