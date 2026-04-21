@@ -1512,14 +1512,18 @@ class TradingBot:
 
             # In paper mode check candle wicks so SL/TP hits aren't missed between monitor cycles.
             # Only use candles that closed AFTER entry — pre-entry wicks must be ignored.
+            # Scan ALL post-entry candles (not just the last) so a TP/SL wick from
+            # any earlier candle in the window is never missed if price has since retraced.
             if self.paper and len(df) >= 2:
                 entry_dt = pd.Timestamp(pos.entry_time).tz_localize(None) if pd.Timestamp(pos.entry_time).tzinfo is not None else pd.Timestamp(pos.entry_time)
                 post_entry = df[df["timestamp"] > entry_dt]
                 if not post_entry.empty:
-                    last = post_entry.iloc[-1]
+                    # Worst-case wick across all post-entry candles
+                    candle_high = float(post_entry["high"].max())
+                    candle_low  = float(post_entry["low"].min())
                     exit_reason = self.risk.should_exit(slot_key, price,
-                                                        candle_high=float(last["high"]),
-                                                        candle_low=float(last["low"]))
+                                                        candle_high=candle_high,
+                                                        candle_low=candle_low)
                 else:
                     exit_reason = self.risk.should_exit(slot_key, price)
             else:
