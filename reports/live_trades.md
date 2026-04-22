@@ -1,10 +1,19 @@
 # Live Trades
-_Updated: 2026-04-21 10:11 UTC_
-_Total: 53 trades_
+_Updated: 2026-04-22 10:12 UTC_
+_Total: 66 trades_
 
-**Overall: 23W / 30L  (43% WR)  Total PnL: -2.49 USDT**
+**Overall: 29W / 37L  (44% WR)  Total PnL: +15.88 USDT**
 
-## 2026-04-21  —  4 trades  |  50% WR  |  +8.09 USDT
+## 2026-04-22  —  4 trades  |  100% WR  |  +32.51 USDT
+
+| Time (UTC) | Slot | Side | Conf | Outcome | PnL USDT | PnL % | Equity |
+|------------|------|------|------|---------|----------|-------|--------|
+| 00:19 | SOLUSDT_UMCBL_5m+4h | LONG | 0.60 | ✅ TP | +4.64 | +0.75% | £81.51 |
+| 02:11 | SOLUSDT_UMCBL_5m+4h | LONG | 0.67 | ✅ TP | +9.29 | +0.73% | £90.80 |
+| 05:26 | BTCUSDT_UMCBL_1h+1d | LONG | 0.63 | ✅ TP | +9.29 | +2.50% | £100.09 |
+| 05:26 | SOLUSDT_UMCBL_5m+4h | LONG | 0.61 | ✅ TP | +9.29 | +0.80% | £109.37 |
+
+## 2026-04-21  —  13 trades  |  31% WR  |  -6.05 USDT
 
 | Time (UTC) | Slot | Side | Conf | Outcome | PnL USDT | PnL % | Equity |
 |------------|------|------|------|---------|----------|-------|--------|
@@ -12,6 +21,15 @@ _Total: 53 trades_
 | 05:04 | SOLUSDT_UMCBL_5m+4h | SHORT | 0.60 | ❌ SL | -2.92 | -0.36% | £89.27 |
 | 06:13 | SOLUSDT_UMCBL_5m+4h | LONG | 0.56 | ❌ SL | -2.92 | -0.37% | £86.35 |
 | 10:11 | SOLUSDT_UMCBL_5m+4h | LONG | 0.57 | ✅ TP | +4.64 | +0.61% | £91.00 |
+| 11:12 | SOLUSDT_UMCBL_5m+4h | LONG | 0.64 | ❌ SL | -2.92 | -0.32% | £88.08 |
+| 12:39 | SOLUSDT_UMCBL_5m+4h | LONG | 0.60 | ❌ SL | -2.92 | -0.39% | £85.16 |
+| 12:40 | BTCUSDT_UMCBL_5m+4h | LONG | 0.60 | ❌ SL | -2.92 | -0.40% | £82.24 |
+| 14:39 | SOLUSDT_UMCBL_5m+4h | LONG | 0.60 | ✅ TP | +6.04 | +0.76% | £88.27 |
+| 15:01 | SOLUSDT_UMCBL_5m+4h | LONG | 0.59 | ❌ SL | -4.38 | -0.62% | £83.90 |
+| 17:19 | SOLUSDT_UMCBL_5m+4h | SHORT | 0.56 | ✅ TP | +4.64 | +1.01% | £88.54 |
+| 19:43 | BTCUSDT_UMCBL_1h+1d | LONG | 0.62 | ❌ SL | -5.84 | -1.49% | £82.70 |
+| 20:32 | SOLUSDT_UMCBL_5m+4h | SHORT | 0.56 | ❌ SL | -2.92 | -0.72% | £79.78 |
+| 23:02 | SOLUSDT_UMCBL_5m+4h | SHORT | 0.60 | ❌ SL | -2.92 | -0.53% | £76.86 |
 
 ## 2026-04-19  —  13 trades  |  54% WR  |  +14.93 USDT
 
