@@ -163,17 +163,37 @@ def print_trade_card(pair: str, signal: int, confidence: float,
 # ─────────────────────────────────────────────────────────────────────────────
 class TradingBot:
 
-    def __init__(self, config_path: str = "config.yaml"):
+    def __init__(self, config_path: str = "config.yaml",
+                 user_id: str = "",
+                 user_override: dict = None):
+        """
+        user_id:       Fortuna user ID — used to isolate state and report trades.
+        user_override: {api_key, api_secret, passphrase, capital} from Fortuna API.
+                       When provided, overrides config.yaml values for this user.
+        """
         self.cfg  = load_config(config_path)
         setup_logging(self.cfg)
-        self.log  = logging.getLogger("Bot")
+        self.log  = logging.getLogger(f"Bot[{user_id[:8]}]" if user_id else "Bot")
+        self.user_id = user_id
+
+        # Apply per-user overrides from the Fortuna API
+        if user_override:
+            if user_override.get("api_key"):
+                self.cfg["exchange"]["api_key"]    = user_override["api_key"]
+                self.cfg["exchange"]["api_secret"] = user_override["api_secret"]
+                self.cfg["exchange"]["passphrase"] = user_override.get("passphrase", "")
+            if user_override.get("capital"):
+                self.cfg["risk"]["initial_capital"] = float(user_override["capital"])
 
         ec = self.cfg["exchange"]
         self.paper    = self.cfg["trading"]["paper_trading"]
         self.pairs    = [p for p in self.cfg["trading"]["pairs"] if p["enabled"]]
         self.tf       = str(self.cfg["trading"]["timeframe"])
         self.lookback = self.cfg["trading"]["lookback_candles"]
-        self.data_dir = self.cfg.get("data", {}).get("data_dir", "/data")
+        base_data_dir = self.cfg.get("data", {}).get("data_dir", "/data")
+        # Per-user state isolation — each user gets their own subdirectory
+        self.data_dir = os.path.join(base_data_dir, user_id) if user_id else base_data_dir
+        os.makedirs(self.data_dir, exist_ok=True)
 
         # Higher-timeframe for confluence filter
         # Analysis recommendations override this after the analysis runs
@@ -275,6 +295,17 @@ class TradingBot:
         self._load_health_state()
 
     # ── Dashboard state ───────────────────────────────────────────────────────
+
+    def _report_trade(self, trade: dict, exit_reason: str) -> None:
+        """Post completed trade to Fortuna API and update equity. No-op if no user_id."""
+        if not self.user_id:
+            return
+        try:
+            import fortuna_client
+            fortuna_client.post_trade(self.user_id, trade, self.risk.equity, exit_reason)
+            fortuna_client.post_equity(self.user_id, self.risk.equity, self.risk.hwm)
+        except Exception as exc:
+            self.log.warning("Could not report trade to Fortuna API: %s", exc)
 
     def _write_state(self) -> None:
         """Write current bot state to /data/state.json for the dashboard."""
@@ -1556,6 +1587,7 @@ class TradingBot:
                 if trade:
                     trade["slot_key"] = slot_key
                     self.logger.log_trade(trade, self.risk.equity, exit_reason)
+                    self._report_trade(trade, exit_reason)
                     notify_close(symbol, trade["side"], tf_label,
                                  trade["entry_price"], trade["exit_price"],
                                  trade["pnl_usdt"], self.risk.equity, exit_reason)
@@ -1616,6 +1648,7 @@ class TradingBot:
                 if trade:
                     trade["slot_key"] = slot_key
                     self.logger.log_trade(trade, self.risk.equity, exit_reason)
+                    self._report_trade(trade, exit_reason)
                     notify_close(symbol, trade["side"], tf_label,
                                  trade["entry_price"], trade["exit_price"],
                                  trade["pnl_usdt"], self.risk.equity, exit_reason)
