@@ -79,6 +79,7 @@ class RiskManager:
         self.max_daily_loss_pct = rc.get("max_daily_loss_pct", 0.12)  # 12% of current equity
         self.min_holding        = sc.get("min_holding_candles", 2)
         self.max_leverage       = rc.get("max_leverage", 20)
+        self.max_margin_pct     = rc.get("max_margin_pct", 0.10)      # 10% of equity per trade
 
         # ── Day-of-week risk % (applied to HWM, not current equity) ───────────
         # 0=Mon 1=Tue 2=Wed 3=Thu 4=Fri 5=Sat 6=Sun
@@ -328,7 +329,33 @@ class RiskManager:
             max_qty  = (self.equity * kelly_f * leverage) / entry
             qty      = min(qty, max_qty)
 
+        # Margin cap — never commit more than max_margin_pct of equity to one trade.
+        # margin_used = (qty * entry) / leverage, so:
+        # max_qty_by_margin = (equity * max_margin_pct * leverage) / entry
+        if self.equity > 0 and leverage > 0:
+            max_qty_by_margin = (self.equity * self.max_margin_pct * leverage) / entry
+            if qty > max_qty_by_margin:
+                import math as _math
+                self._log_margin_cap(qty, max_qty_by_margin, entry, leverage)
+                qty = max_qty_by_margin
+
         return round(max(qty, 0.0), 6), leverage
+
+    def _log_margin_cap(self, original_qty: float, capped_qty: float,
+                        entry: float, leverage: int) -> None:
+        margin_orig   = (original_qty * entry) / leverage
+        margin_capped = (capped_qty   * entry) / leverage
+        try:
+            import logging
+            logging.getLogger(__name__).info(
+                "📐 Margin cap applied: qty %.6f → %.6f  "
+                "(margin %.2f → %.2f, %.0f%% of equity %.2f)",
+                original_qty, capped_qty,
+                margin_orig, margin_capped,
+                self.max_margin_pct * 100, self.equity,
+            )
+        except Exception:
+            pass
 
     # ── Gate checks ───────────────────────────────────────────────────────────
 
