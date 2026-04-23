@@ -91,9 +91,19 @@ def run_multi_user():
 
                 bot = bot_instances[user_id]
 
-                # Update capital in case the user changed it in the dashboard
+                # Sync capital in case the user changed it in the dashboard.
+                # Update both the config dict AND the live RiskManager so that
+                # risk_amount_today() (which uses risk.hwm) reflects the new amount.
                 if user_config and user_config.get("capital"):
-                    bot.cfg["risk"]["initial_capital"] = float(user_config["capital"])
+                    new_capital = float(user_config["capital"])
+                    bot.cfg["risk"]["initial_capital"] = new_capital
+                    bot.risk.initial_capital = new_capital
+                    # Only update equity/HWM if the user has no open positions and
+                    # hasn't traded yet (i.e. equity still equals the old starting capital).
+                    # This avoids overwriting a live running account's real equity.
+                    if not bot.risk.open_positions and bot.risk.equity == bot.risk.hwm:
+                        bot.risk.equity = new_capital
+                        bot.risk.hwm    = new_capital
 
                 # Check exits first (SL/TP) — must run before entry scan
                 bot.monitor_exits()
