@@ -295,7 +295,8 @@ HTML = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Trading Bot</title>
+  <title>Fortuna Trading Bot</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 500 520'%3E%3Crect width='500' height='520' fill='%23000'/%3E%3Cpolygon points='250,6 425,107 425,309 250,410 75,309 75,107' fill='none' stroke='%23FFD700' stroke-width='11'/%3E%3Ccircle cx='250' cy='208' r='90' fill='%23000' stroke='%23FFD700' stroke-width='8'/%3E%3Ccircle cx='250' cy='208' r='22' fill='%23FFD700'/%3E%3C/svg%3E" type="image/svg+xml">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -304,10 +305,15 @@ HTML = """<!DOCTYPE html>
       font-size: 14px; padding-bottom: 32px;
     }
     header {
-      background: #1a1d2e; padding: 16px;
+      background: #1a1d2e; padding: 12px 16px;
       display: flex; align-items: center; justify-content: space-between;
       border-bottom: 1px solid #2d3148; position: sticky; top: 0; z-index: 10;
     }
+    .header-brand { display: flex; align-items: center; gap: 10px; }
+    .header-brand svg { width: 36px; height: 38px; }
+    .header-brand-text { display: flex; flex-direction: column; }
+    .header-brand-name { font-size: 16px; font-weight: 700; letter-spacing: 2px; background: linear-gradient(180deg,#FFE566,#B8860B); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .header-brand-sub  { font-size: 9px; letter-spacing: 3px; color: #718096; text-transform: uppercase; }
     header h1 { font-size: 17px; font-weight: 700; letter-spacing: 0.3px; }
     .header-right { display: flex; align-items: center; gap: 10px; }
     .badge { font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 99px; letter-spacing: 0.5px; }
@@ -359,9 +365,18 @@ HTML = """<!DOCTYPE html>
 <body>
 
 <header>
-  <div>
-    <h1>&#x1F916; Trading Bot</h1>
-    <div class="updated" id="updated">Loading&#x2026;</div>
+  <div class="header-brand">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 520">
+      <rect width="500" height="520" fill="#000"/>
+      <polygon points="250,6 425,107 425,309 250,410 75,309 75,107" fill="none" stroke="#FFD700" stroke-width="11"/>
+      <circle cx="250" cy="208" r="90" fill="#000" stroke="#FFD700" stroke-width="8"/>
+      <circle cx="250" cy="208" r="22" fill="#FFD700"/>
+    </svg>
+    <div class="header-brand-text">
+      <span class="header-brand-name">FORTUNA</span>
+      <span class="header-brand-sub">Trading Bot</span>
+      <div class="updated" id="updated">Loading&#x2026;</div>
+    </div>
   </div>
   <div class="header-right">
     <div>
@@ -470,6 +485,10 @@ CALENDAR_HTML = """<!DOCTYPE html>
       border-bottom: 1px solid #2d3148; position: sticky; top: 0; z-index: 10;
     }
     header h1 { font-size: 17px; font-weight: 700; }
+    .header-brand { display: flex; align-items: center; gap: 8px; }
+    .header-brand svg { width: 28px; height: 29px; }
+    .header-brand-name { font-size: 15px; font-weight: 700; letter-spacing: 2px; background: linear-gradient(180deg,#FFE566,#B8860B); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .header-brand-sub  { font-size: 9px; letter-spacing: 2px; color: #718096; text-transform: uppercase; }
     .nav-btn {
       background: #2d3148; color: #e2e8f0; border: 1px solid #3d4268;
       border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 600;
@@ -518,7 +537,18 @@ CALENDAR_HTML = """<!DOCTYPE html>
 <body>
 <header>
   <a href="/" style="text-decoration:none;color:#90cdf4;font-size:13px;">&#x2190; Dashboard</a>
-  <h1>&#x1F4C5; PnL Calendar</h1>
+  <div class="header-brand">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 520">
+      <rect width="500" height="520" fill="#000"/>
+      <polygon points="250,6 425,107 425,309 250,410 75,309 75,107" fill="none" stroke="#FFD700" stroke-width="11"/>
+      <circle cx="250" cy="208" r="90" fill="#000" stroke="#FFD700" stroke-width="8"/>
+      <circle cx="250" cy="208" r="22" fill="#FFD700"/>
+    </svg>
+    <div>
+      <div class="header-brand-name">FORTUNA</div>
+      <div class="header-brand-sub">PnL Calendar</div>
+    </div>
+  </div>
   <div style="width:80px"></div>
 </header>
 
