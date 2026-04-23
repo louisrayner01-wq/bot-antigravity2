@@ -908,7 +908,9 @@ PNL_HTML = """<!DOCTYPE html>
     .month-meta { display: flex; gap: 16px; margin-bottom: 12px; flex-wrap: wrap; }
     .month-meta-item .ml { font-size: 10px; color: #718096; }
     .month-meta-item .mv { font-size: 13px; font-weight: 700; margin-top: 1px; }
-    canvas { display: block; width: 100% !important; }
+    .chart-wrap { position: relative; height: 120px; width: 100%; }
+    .chart-wrap-sm { position: relative; height: 100px; width: 100%; }
+    canvas { position: absolute; top: 0; left: 0; }
   </style>
 </head>
 <body>
@@ -985,25 +987,25 @@ PNL_HTML = """<!DOCTYPE html>
       <div class="month-meta-item"><div class="ml">Green days</div><div class="mv pos" id="m-green">&mdash;</div></div>
       <div class="month-meta-item"><div class="ml">Red days</div><div class="mv neg" id="m-red">&mdash;</div></div>
     </div>
-    <canvas id="daily-chart" height="120"></canvas>
+    <div class="chart-wrap"><canvas id="daily-chart"></canvas></div>
   </div>
 
   <!-- Weekly PnL -->
   <div class="card">
     <div class="section-title">Weekly P&L</div>
-    <canvas id="weekly-chart" height="110"></canvas>
+    <div class="chart-wrap-sm"><canvas id="weekly-chart"></canvas></div>
   </div>
 
   <!-- Monthly PnL -->
   <div class="card">
     <div class="section-title">Monthly P&L</div>
-    <canvas id="monthly-chart" height="110"></canvas>
+    <div class="chart-wrap-sm"><canvas id="monthly-chart"></canvas></div>
   </div>
 
   <!-- Equity curve -->
   <div class="card">
     <div class="section-title">Equity Curve</div>
-    <canvas id="equity-chart" height="120"></canvas>
+    <div class="chart-wrap"><canvas id="equity-chart"></canvas></div>
   </div>
 
 </div>
