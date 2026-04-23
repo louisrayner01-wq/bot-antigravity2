@@ -79,7 +79,8 @@ class RiskManager:
         self.max_daily_loss_pct = rc.get("max_daily_loss_pct", 0.12)  # 12% of current equity
         self.min_holding        = sc.get("min_holding_candles", 2)
         self.max_leverage       = rc.get("max_leverage", 20)
-        self.max_margin_pct     = rc.get("max_margin_pct", 0.10)      # 10% of equity per trade
+        # max_margin_pct not used — margin per trade comes from risk_amount_today() which
+        # applies day-of-week % and hour multiplier so risk varies by schedule.
 
         # ── Day-of-week risk % (applied to HWM, not current equity) ───────────
         # 0=Mon 1=Tue 2=Wed 3=Thu 4=Fri 5=Sat 6=Sun
@@ -288,7 +289,7 @@ class RiskManager:
     # ── Dynamic leverage + position sizing ───────────────────────────────────
 
     def calc_position(self, entry: float, atr: float,
-                      win_rate: Optional[float] = None) -> Tuple[float, int]:
+                      win_rate: Optional[float] = None) -> Tuple[float, int]:  # win_rate kept for API compat
         """
         Calculates position size (qty) and leverage so that:
 
@@ -311,12 +312,15 @@ class RiskManager:
 
         stop_distance = atr * self.sl_atr_mult
 
-        # Leverage that places liquidation at the stop-loss level
+        # Leverage that places liquidation at the stop-loss level:
+        #   long liq  = entry × (1 − 1/L) ≈ SL  →  L = entry / stop_distance
+        #   short liq = entry × (1 + 1/L) ≈ SL  →  same formula
         raw_leverage = entry / stop_distance
         leverage = max(1, min(self.max_leverage, round(raw_leverage)))
 
-        # Fixed margin allocation per trade
-        margin = self.equity * self.max_margin_pct
+        # Margin per trade = risk amount for today (day-of-week % × hour multiplier × HWM).
+        # Because liq = SL, losing this margin is exactly what happens when the stop is hit.
+        margin = self.risk_amount_today()
         qty    = (margin * leverage) / entry
 
         return round(max(qty, 0.0), 6), leverage
