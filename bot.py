@@ -338,6 +338,13 @@ class TradingBot:
             state_path = os.path.join(self.data_dir, "state.json")
             with open(state_path, "w") as f:
                 json.dump(state, f, indent=2)
+            # Always write to base /data/state.json so the Railway dashboard can read it
+            base_state_path = os.path.join(
+                self.cfg.get("data", {}).get("data_dir", "/data"), "state.json"
+            )
+            if base_state_path != state_path:
+                with open(base_state_path, "w") as f:
+                    json.dump(state, f, indent=2)
         except Exception as exc:
             self.log.debug("Could not write state.json: %s", exc)
 

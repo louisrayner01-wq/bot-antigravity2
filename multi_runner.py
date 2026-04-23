@@ -19,7 +19,6 @@ Shared across all users (loaded once on startup):
 import os
 import time
 import logging
-import yaml
 
 import fortuna_client
 from bot import TradingBot, load_config, setup_logging
@@ -96,10 +95,16 @@ def run_multi_user():
                 if user_config and user_config.get("capital"):
                     bot.cfg["risk"]["initial_capital"] = float(user_config["capital"])
 
-                # Run the trading tick for this user
+                # Check exits first (SL/TP) — must run before entry scan
+                bot.monitor_exits()
+
+                # Run the entry scan tick for this user
                 bot.tick()
 
-                # Push equity update to dashboard after each tick
+                # Update dashboard state file
+                bot._write_state()
+
+                # Push equity update to Fortuna API dashboard
                 if user_id:
                     fortuna_client.post_equity(user_id, bot.risk.equity, bot.risk.hwm)
 
