@@ -985,25 +985,25 @@ PNL_HTML = """<!DOCTYPE html>
       <div class="month-meta-item"><div class="ml">Green days</div><div class="mv pos" id="m-green">&mdash;</div></div>
       <div class="month-meta-item"><div class="ml">Red days</div><div class="mv neg" id="m-red">&mdash;</div></div>
     </div>
-    <canvas id="daily-chart" height="180"></canvas>
+    <canvas id="daily-chart" height="120"></canvas>
   </div>
 
   <!-- Weekly PnL -->
   <div class="card">
     <div class="section-title">Weekly P&L</div>
-    <canvas id="weekly-chart" height="160"></canvas>
+    <canvas id="weekly-chart" height="110"></canvas>
   </div>
 
   <!-- Monthly PnL -->
   <div class="card">
     <div class="section-title">Monthly P&L</div>
-    <canvas id="monthly-chart" height="160"></canvas>
+    <canvas id="monthly-chart" height="110"></canvas>
   </div>
 
   <!-- Equity curve -->
   <div class="card">
     <div class="section-title">Equity Curve</div>
-    <canvas id="equity-chart" height="180"></canvas>
+    <canvas id="equity-chart" height="120"></canvas>
   </div>
 
 </div>
