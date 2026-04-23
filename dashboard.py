@@ -905,11 +905,13 @@ PNL_HTML = """<!DOCTYPE html>
     .nav-btn:hover { background: #3d4268; }
     .nav-btn:disabled { opacity: 0.3; cursor: default; }
     .month-label { font-size: 13px; font-weight: 700; min-width: 100px; text-align: center; }
-    .month-meta { display: flex; gap: 16px; margin-bottom: 14px; flex-wrap: wrap; }
+    .month-meta { display: flex; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
     .month-meta-item .ml { font-size: 10px; color: #718096; }
     .month-meta-item .mv { font-size: 14px; font-weight: 700; margin-top: 2px; }
-    .chart-wrap { position: relative; height: 220px; width: 100%; }
-    .chart-wrap-sm { position: relative; height: 180px; width: 100%; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+    .grid-2 .card { margin-bottom: 0; }
+    .chart-wrap { position: relative; height: 200px; width: 100%; }
+    .chart-wrap-sm { position: relative; height: 160px; width: 100%; }
     canvas { position: absolute; top: 0; left: 0; }
   </style>
 </head>
@@ -990,16 +992,16 @@ PNL_HTML = """<!DOCTYPE html>
     <div class="chart-wrap"><canvas id="daily-chart"></canvas></div>
   </div>
 
-  <!-- Weekly PnL -->
-  <div class="card">
-    <div class="section-title">Weekly P&L</div>
-    <div class="chart-wrap-sm"><canvas id="weekly-chart"></canvas></div>
-  </div>
-
-  <!-- Monthly PnL -->
-  <div class="card">
-    <div class="section-title">Monthly P&L</div>
-    <div class="chart-wrap-sm"><canvas id="monthly-chart"></canvas></div>
+  <!-- Weekly + Monthly side by side -->
+  <div class="grid-2">
+    <div class="card">
+      <div class="section-title">Weekly P&L</div>
+      <div class="chart-wrap-sm"><canvas id="weekly-chart"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="section-title">Monthly P&L</div>
+      <div class="chart-wrap-sm"><canvas id="monthly-chart"></canvas></div>
+    </div>
   </div>
 
   <!-- Equity curve -->
