@@ -90,6 +90,55 @@ def serve_manifest():
 
 # ── API endpoints ──────────────────────────────────────────────────────────────
 
+@app.get("/api/pnl-chart")
+def get_pnl_chart():
+    """Aggregate trades CSV into daily / weekly / monthly PnL and equity series."""
+    from collections import defaultdict
+    if not os.path.exists(TRADES_FILE):
+        return {"daily": [], "weekly": [], "monthly": [], "equity_series": []}
+
+    daily   = defaultdict(lambda: {"pnl": 0.0, "trades": 0})
+    weekly  = defaultdict(lambda: {"pnl": 0.0, "trades": 0})
+    monthly = defaultdict(lambda: {"pnl": 0.0, "trades": 0})
+    equity_series = []
+
+    with open(TRADES_FILE, newline="") as f:
+        for row in csv.DictReader(f):
+            ts  = row.get("timestamp", "")[:10]
+            if not ts:
+                continue
+            pnl = float(row.get("pnl_usdt", 0) or 0)
+            try:
+                from datetime import datetime
+                dt       = datetime.strptime(ts, "%Y-%m-%d")
+                week_key = dt.strftime("%Y-W%W")
+                mon_key  = ts[:7]
+            except ValueError:
+                continue
+
+            daily[ts]["pnl"]       += pnl
+            daily[ts]["trades"]    += 1
+            weekly[week_key]["pnl"]    += pnl
+            weekly[week_key]["trades"] += 1
+            monthly[mon_key]["pnl"]    += pnl
+            monthly[mon_key]["trades"] += 1
+
+            eq = float(row.get("equity_after", 0) or 0)
+            if eq:
+                equity_series.append({"date": ts, "equity": round(eq, 2)})
+
+    def to_list(d, key):
+        return [{"{}".format(key): k, "pnl": round(v["pnl"], 2), "trades": v["trades"]}
+                for k, v in sorted(d.items())]
+
+    return {
+        "daily":         to_list(daily,   "date"),
+        "weekly":        to_list(weekly,  "week"),
+        "monthly":       to_list(monthly, "month"),
+        "equity_series": equity_series,
+    }
+
+
 @app.get("/api/download-models")
 def download_models():
     """Temporary endpoint — download all model files from /data/models/ as a zip."""
@@ -487,7 +536,10 @@ HTML = """<!DOCTYPE html>
         <option value="5000">&#xa3;5,000</option>
       </select>
     </div>
-    <a href="/calendar" target="_blank" style="text-decoration:none;">
+    <a href="/pnl" style="text-decoration:none;">
+      <div class="badge" style="background:#2d3148;color:#90cdf4;cursor:pointer;">&#x1F4C8; P&amp;L</div>
+    </a>
+    <a href="/calendar" style="text-decoration:none;">
       <div class="badge" style="background:#2d3148;color:#90cdf4;cursor:pointer;">&#x1F4C5; Calendar</div>
     </a>
     <div id="mode-badge" class="badge badge-paper">PAPER</div>
@@ -810,3 +862,307 @@ fetch("/api/calendar").then(function(r) { return r.json(); }).then(function(d) {
 @app.get("/calendar", response_class=HTMLResponse)
 def calendar_view():
     return CALENDAR_HTML
+
+
+# ── PnL Performance Page ───────────────────────────────────────────────────────
+
+PNL_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fortuna — Performance</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0f1117; color: #e2e8f0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px; padding-bottom: 40px;
+    }
+    header {
+      background: #1a1d2e; padding: 12px 16px;
+      display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 1px solid #2d3148; position: sticky; top: 0; z-index: 10;
+    }
+    .header-brand { display: flex; align-items: center; gap: 10px; }
+    .header-brand svg { width: 36px; height: 38px; }
+    .header-brand-text { display: flex; flex-direction: column; }
+    .header-brand-name { font-size: 16px; font-weight: 700; letter-spacing: 2px; background: linear-gradient(180deg,#FFE566,#B8860B); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .header-brand-sub  { font-size: 9px; letter-spacing: 3px; color: #718096; text-transform: uppercase; }
+    .back-btn { font-size: 13px; color: #90cdf4; text-decoration: none; }
+    .back-btn:hover { color: #e2e8f0; }
+    .section { padding: 16px; }
+    .section-title { font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: #718096; margin-bottom: 12px; }
+    .card { background: #1a1d2e; border: 1px solid #2d3148; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    .stats-row { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; margin-bottom: 16px; }
+    .stat-pill { background: #1a1d2e; border: 1px solid #2d3148; border-radius: 10px; padding: 12px; }
+    .stat-pill .label { font-size: 10px; color: #718096; text-transform: uppercase; letter-spacing: 0.5px; }
+    .stat-pill .value { font-size: 18px; font-weight: 700; margin-top: 4px; }
+    .pos { color: #68d391; } .neg { color: #fc8181; } .neu { color: #e2e8f0; }
+    .chart-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    .nav-btn { background: #2d3148; color: #e2e8f0; border: 1px solid #3d4268; border-radius: 6px; padding: 4px 10px; font-size: 13px; font-weight: 600; cursor: pointer; }
+    .nav-btn:hover { background: #3d4268; }
+    .nav-btn:disabled { opacity: 0.3; cursor: default; }
+    .month-label { font-size: 13px; font-weight: 700; min-width: 100px; text-align: center; }
+    .month-meta { display: flex; gap: 16px; margin-bottom: 12px; flex-wrap: wrap; }
+    .month-meta-item .ml { font-size: 10px; color: #718096; }
+    .month-meta-item .mv { font-size: 13px; font-weight: 700; margin-top: 1px; }
+    canvas { display: block; width: 100% !important; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="header-brand">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 420">
+      <defs>
+        <linearGradient id="pg" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#FFE566"/><stop offset="100%" stop-color="#B8860B"/></linearGradient>
+        <linearGradient id="pwl" x1="100%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#FFE566"/><stop offset="100%" stop-color="#7A5500"/></linearGradient>
+        <linearGradient id="pwr" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#FFE566"/><stop offset="100%" stop-color="#7A5500"/></linearGradient>
+        <filter id="pglow"><feGaussianBlur stdDeviation="4" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      </defs>
+      <polygon points="250,6 425,107 425,309 250,410 75,309 75,107" fill="transparent" stroke="url(#pg)" stroke-width="11" stroke-linejoin="round" filter="url(#pglow)"/>
+      <polygon points="250,32 404,122 404,294 250,384 96,294 96,122" fill="none" stroke="#FFD700" stroke-width="2.5" opacity="0.3"/>
+      <polygon points="168,205 101,92 156,211" fill="url(#pwl)" opacity="1.00"/>
+      <polygon points="167,203 75,135 158,213" fill="url(#pwl)" opacity="0.87"/>
+      <polygon points="164,201 75,176 160,215" fill="url(#pwl)" opacity="0.74"/>
+      <polygon points="162,201 75,208 162,215" fill="url(#pwl)" opacity="0.62"/>
+      <polygon points="165,215 75,243 159,202" fill="url(#pwl)" opacity="0.50"/>
+      <polygon points="167,213 75,286 157,203" fill="url(#pwl)" opacity="0.38"/>
+      <polygon points="332,205 399,92 344,211" fill="url(#pwr)" opacity="1.00"/>
+      <polygon points="333,203 425,135 342,213" fill="url(#pwr)" opacity="0.87"/>
+      <polygon points="336,201 425,176 340,215" fill="url(#pwr)" opacity="0.74"/>
+      <polygon points="338,201 425,208 338,215" fill="url(#pwr)" opacity="0.62"/>
+      <polygon points="335,215 425,243 341,202" fill="url(#pwr)" opacity="0.50"/>
+      <polygon points="333,213 425,286 343,203" fill="url(#pwr)" opacity="0.38"/>
+      <circle cx="250" cy="208" r="90" fill="#1a1d2e" stroke="url(#pg)" stroke-width="8" filter="url(#pglow)"/>
+      <circle cx="250" cy="208" r="59" fill="none" stroke="url(#pg)" stroke-width="3.5"/>
+      <g stroke="#FFD700" stroke-width="4.5" stroke-linecap="round">
+        <line x1="250" y1="118" x2="250" y2="298"/>
+        <line x1="160" y1="208" x2="340" y2="208"/>
+        <line x1="186" y1="144" x2="314" y2="272"/>
+        <line x1="314" y1="144" x2="186" y2="272"/>
+      </g>
+      <circle cx="250" cy="208" r="22" fill="url(#pg)"/>
+      <circle cx="250" cy="208" r="12" fill="#1a1d2e"/>
+      <circle cx="250" cy="208" r="5"  fill="#FFD700"/>
+      <polygon points="250,109 244,118 250,127 256,118" fill="#FFD700"/>
+      <polygon points="250,289 244,298 250,307 256,298" fill="#FFD700"/>
+      <polygon points="151,202 160,208 151,214 160,208" fill="#FFD700"/>
+      <polygon points="340,202 349,208 340,214 349,208" fill="#FFD700"/>
+    </svg>
+    <div class="header-brand-text">
+      <span class="header-brand-name">FORTUNA</span>
+      <span class="header-brand-sub">Performance</span>
+    </div>
+  </div>
+  <a href="/" class="back-btn">&#x2190; Dashboard</a>
+</header>
+
+<div class="section">
+
+  <!-- Summary pills -->
+  <div class="stats-row">
+    <div class="stat-pill"><div class="label">All-time P&L</div><div class="value" id="all-pnl">&mdash;</div></div>
+    <div class="stat-pill"><div class="label">Total Trades</div><div class="value neu" id="all-trades">&mdash;</div></div>
+    <div class="stat-pill"><div class="label">Win Days</div><div class="value pos" id="win-days">&mdash;</div></div>
+  </div>
+
+  <!-- Daily PnL -->
+  <div class="card">
+    <div class="chart-header">
+      <div class="section-title" style="margin:0">Daily P&L</div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <button class="nav-btn" id="prev-mon" onclick="shiftMonth(-1)">&#x2190;</button>
+        <span class="month-label" id="mon-label"></span>
+        <button class="nav-btn" id="next-mon" onclick="shiftMonth(1)">&#x2192;</button>
+      </div>
+    </div>
+    <div class="month-meta">
+      <div class="month-meta-item"><div class="ml">Month P&L</div><div class="mv" id="m-pnl">&mdash;</div></div>
+      <div class="month-meta-item"><div class="ml">Trades</div><div class="mv neu" id="m-trades">&mdash;</div></div>
+      <div class="month-meta-item"><div class="ml">Green days</div><div class="mv pos" id="m-green">&mdash;</div></div>
+      <div class="month-meta-item"><div class="ml">Red days</div><div class="mv neg" id="m-red">&mdash;</div></div>
+    </div>
+    <canvas id="daily-chart" height="180"></canvas>
+  </div>
+
+  <!-- Weekly PnL -->
+  <div class="card">
+    <div class="section-title">Weekly P&L</div>
+    <canvas id="weekly-chart" height="160"></canvas>
+  </div>
+
+  <!-- Monthly PnL -->
+  <div class="card">
+    <div class="section-title">Monthly P&L</div>
+    <canvas id="monthly-chart" height="160"></canvas>
+  </div>
+
+  <!-- Equity curve -->
+  <div class="card">
+    <div class="section-title">Equity Curve</div>
+    <canvas id="equity-chart" height="180"></canvas>
+  </div>
+
+</div>
+
+<script>
+var _daily = [], _weekly = [], _monthly = [], _equity = [];
+var _months = [], _monIdx = 0;
+var _charts = {};
+
+var CHART_DEFAULTS = {
+  plugins: { legend: { display: false }, tooltip: {
+    backgroundColor: "#1a1d2e", borderColor: "#2d3148", borderWidth: 1,
+    titleColor: "#90cdf4", bodyColor: "#e2e8f0", padding: 10,
+  }},
+  scales: {
+    x: { ticks: { color: "#718096", font: { size: 10 } }, grid: { color: "#1e2235" }, border: { display: false } },
+    y: { ticks: { color: "#718096", font: { size: 10 } }, grid: { color: "#1e2235" }, border: { display: false } },
+  },
+  animation: false,
+  responsive: true,
+  maintainAspectRatio: false,
+};
+
+function sign(v) { return v >= 0 ? "+" : ""; }
+function fmt(v)  { return sign(v) + "$" + Math.abs(parseFloat(v)).toFixed(2); }
+function pnlColor(v) { return parseFloat(v) >= 0 ? "#68d391" : "#fc8181"; }
+
+function buildBarChart(id, labels, values, labelFn) {
+  var ctx = document.getElementById(id).getContext("2d");
+  if (_charts[id]) _charts[id].destroy();
+  _charts[id] = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels: labels,
+      datasets: [{
+        data: values,
+        backgroundColor: values.map(function(v) { return pnlColor(v); }),
+        borderRadius: 3,
+      }]
+    },
+    options: Object.assign({}, CHART_DEFAULTS, {
+      plugins: Object.assign({}, CHART_DEFAULTS.plugins, {
+        tooltip: Object.assign({}, CHART_DEFAULTS.plugins.tooltip, {
+          callbacks: {
+            title: function(items) { return labelFn ? labelFn(items[0].label) : items[0].label; },
+            label: function(item) { return " P&L: " + fmt(item.raw); },
+          }
+        })
+      })
+    })
+  });
+}
+
+function renderDaily() {
+  var mon = _months[_months.length - 1 - _monIdx] || "";
+  var days = _daily.filter(function(d) { return d.date.slice(0,7) === mon; });
+  document.getElementById("mon-label").textContent = mon || "—";
+  document.getElementById("prev-mon").disabled = (_monIdx >= _months.length - 1);
+  document.getElementById("next-mon").disabled = (_monIdx === 0);
+
+  var mPnl    = days.reduce(function(s,d) { return s + d.pnl; }, 0);
+  var mTrades = days.reduce(function(s,d) { return s + d.trades; }, 0);
+  var mGreen  = days.filter(function(d) { return d.pnl > 0; }).length;
+  var mRed    = days.filter(function(d) { return d.pnl < 0; }).length;
+
+  var pEl = document.getElementById("m-pnl");
+  pEl.textContent = fmt(mPnl);
+  pEl.className = "mv " + (mPnl >= 0 ? "pos" : "neg");
+  document.getElementById("m-trades").textContent = mTrades;
+  document.getElementById("m-green").textContent  = mGreen;
+  document.getElementById("m-red").textContent    = mRed;
+
+  buildBarChart("daily-chart",
+    days.map(function(d) { return d.date.slice(8); }),
+    days.map(function(d) { return d.pnl; }),
+    function(l) { return "Day " + l; }
+  );
+}
+
+function shiftMonth(dir) {
+  _monIdx = Math.max(0, Math.min(_months.length - 1, _monIdx - dir));
+  renderDaily();
+}
+
+function render() {
+  // All-time summary
+  var totalPnl    = _monthly.reduce(function(s,m) { return s + m.pnl; }, 0);
+  var totalTrades = _monthly.reduce(function(s,m) { return s + m.trades; }, 0);
+  var winDays     = _daily.filter(function(d) { return d.pnl > 0; }).length;
+  var allDays     = _daily.filter(function(d) { return d.pnl !== 0; }).length;
+
+  var pEl = document.getElementById("all-pnl");
+  pEl.textContent = fmt(totalPnl);
+  pEl.className = "value " + (totalPnl >= 0 ? "pos" : "neg");
+  document.getElementById("all-trades").textContent = totalTrades;
+  document.getElementById("win-days").textContent   = winDays + " / " + allDays;
+
+  // Daily
+  _months = Array.from(new Set(_daily.map(function(d) { return d.date.slice(0,7); }))).sort();
+  renderDaily();
+
+  // Weekly
+  var wSlice = _weekly.slice(-12);
+  buildBarChart("weekly-chart",
+    wSlice.map(function(w) { return "W" + (w.week.split("-W")[1] || w.week); }),
+    wSlice.map(function(w) { return w.pnl; }),
+    function(l) { return "Week " + l.replace("W",""); }
+  );
+
+  // Monthly
+  var mSlice = _monthly.slice(-12);
+  var MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  buildBarChart("monthly-chart",
+    mSlice.map(function(m) { var p = m.month.split("-"); return MONTHS[parseInt(p[1])-1] + " " + p[0]; }),
+    mSlice.map(function(m) { return m.pnl; }),
+    function(l) { return l; }
+  );
+
+  // Equity curve
+  var ctx = document.getElementById("equity-chart").getContext("2d");
+  if (_charts["equity-chart"]) _charts["equity-chart"].destroy();
+  _charts["equity-chart"] = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels: _equity.map(function(e) { return e.date.slice(5); }),
+      datasets: [{
+        data: _equity.map(function(e) { return e.equity; }),
+        borderColor: "#6366f1",
+        borderWidth: 2,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        fill: { target: "origin", above: "rgba(99,102,241,0.08)", below: "rgba(252,129,129,0.08)" },
+        tension: 0.3,
+      }]
+    },
+    options: Object.assign({}, CHART_DEFAULTS, {
+      plugins: Object.assign({}, CHART_DEFAULTS.plugins, {
+        tooltip: Object.assign({}, CHART_DEFAULTS.plugins.tooltip, {
+          callbacks: { label: function(item) { return " Equity: $" + parseFloat(item.raw).toFixed(2); } }
+        })
+      })
+    })
+  });
+}
+
+fetch("/api/pnl-chart")
+  .then(function(r) { return r.json(); })
+  .then(function(d) {
+    _daily   = d.daily   || [];
+    _weekly  = d.weekly  || [];
+    _monthly = d.monthly || [];
+    _equity  = d.equity_series || [];
+    render();
+  });
+</script>
+</body>
+</html>"""
+
+
+@app.get("/pnl", response_class=HTMLResponse)
+def pnl_view():
+    return PNL_HTML
