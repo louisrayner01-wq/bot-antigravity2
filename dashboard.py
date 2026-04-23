@@ -434,11 +434,42 @@ HTML = """<!DOCTYPE html>
 
 <header>
   <div class="header-brand">
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 520">
-      <rect width="500" height="520" fill="#000"/>
-      <polygon points="250,6 425,107 425,309 250,410 75,309 75,107" fill="none" stroke="#FFD700" stroke-width="11"/>
-      <circle cx="250" cy="208" r="90" fill="#000" stroke="#FFD700" stroke-width="8"/>
-      <circle cx="250" cy="208" r="22" fill="#FFD700"/>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 420">
+      <defs>
+        <linearGradient id="hg" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#FFE566"/><stop offset="100%" stop-color="#B8860B"/></linearGradient>
+        <linearGradient id="hwl" x1="100%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#FFE566"/><stop offset="100%" stop-color="#7A5500"/></linearGradient>
+        <linearGradient id="hwr" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#FFE566"/><stop offset="100%" stop-color="#7A5500"/></linearGradient>
+        <filter id="hglow"><feGaussianBlur stdDeviation="4" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      </defs>
+      <polygon points="250,6 425,107 425,309 250,410 75,309 75,107" fill="transparent" stroke="url(#hg)" stroke-width="11" stroke-linejoin="round" filter="url(#hglow)"/>
+      <polygon points="250,32 404,122 404,294 250,384 96,294 96,122" fill="none" stroke="#FFD700" stroke-width="2.5" opacity="0.3"/>
+      <polygon points="168,205 101,92 156,211" fill="url(#hwl)" opacity="1.00"/>
+      <polygon points="167,203 75,135 158,213" fill="url(#hwl)" opacity="0.87"/>
+      <polygon points="164,201 75,176 160,215" fill="url(#hwl)" opacity="0.74"/>
+      <polygon points="162,201 75,208 162,215" fill="url(#hwl)" opacity="0.62"/>
+      <polygon points="165,215 75,243 159,202" fill="url(#hwl)" opacity="0.50"/>
+      <polygon points="167,213 75,286 157,203" fill="url(#hwl)" opacity="0.38"/>
+      <polygon points="332,205 399,92 344,211" fill="url(#hwr)" opacity="1.00"/>
+      <polygon points="333,203 425,135 342,213" fill="url(#hwr)" opacity="0.87"/>
+      <polygon points="336,201 425,176 340,215" fill="url(#hwr)" opacity="0.74"/>
+      <polygon points="338,201 425,208 338,215" fill="url(#hwr)" opacity="0.62"/>
+      <polygon points="335,215 425,243 341,202" fill="url(#hwr)" opacity="0.50"/>
+      <polygon points="333,213 425,286 343,203" fill="url(#hwr)" opacity="0.38"/>
+      <circle cx="250" cy="208" r="90" fill="#1a1d2e" stroke="url(#hg)" stroke-width="8" filter="url(#hglow)"/>
+      <circle cx="250" cy="208" r="59" fill="none" stroke="url(#hg)" stroke-width="3.5"/>
+      <g stroke="#FFD700" stroke-width="4.5" stroke-linecap="round">
+        <line x1="250" y1="118" x2="250" y2="298"/>
+        <line x1="160" y1="208" x2="340" y2="208"/>
+        <line x1="186" y1="144" x2="314" y2="272"/>
+        <line x1="314" y1="144" x2="186" y2="272"/>
+      </g>
+      <circle cx="250" cy="208" r="22" fill="url(#hg)"/>
+      <circle cx="250" cy="208" r="12" fill="#1a1d2e"/>
+      <circle cx="250" cy="208" r="5"  fill="#FFD700"/>
+      <polygon points="250,109 244,118 250,127 256,118" fill="#FFD700"/>
+      <polygon points="250,289 244,298 250,307 256,298" fill="#FFD700"/>
+      <polygon points="151,202 160,208 151,214 160,208" fill="#FFD700"/>
+      <polygon points="340,202 349,208 340,214 349,208" fill="#FFD700"/>
     </svg>
     <div class="header-brand-text">
       <span class="header-brand-name">FORTUNA</span>
@@ -606,11 +637,42 @@ CALENDAR_HTML = """<!DOCTYPE html>
 <header>
   <a href="/" style="text-decoration:none;color:#90cdf4;font-size:13px;">&#x2190; Dashboard</a>
   <div class="header-brand">
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 520">
-      <rect width="500" height="520" fill="#000"/>
-      <polygon points="250,6 425,107 425,309 250,410 75,309 75,107" fill="none" stroke="#FFD700" stroke-width="11"/>
-      <circle cx="250" cy="208" r="90" fill="#000" stroke="#FFD700" stroke-width="8"/>
-      <circle cx="250" cy="208" r="22" fill="#FFD700"/>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 420">
+      <defs>
+        <linearGradient id="cg" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#FFE566"/><stop offset="100%" stop-color="#B8860B"/></linearGradient>
+        <linearGradient id="cwl" x1="100%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#FFE566"/><stop offset="100%" stop-color="#7A5500"/></linearGradient>
+        <linearGradient id="cwr" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#FFE566"/><stop offset="100%" stop-color="#7A5500"/></linearGradient>
+        <filter id="cglow"><feGaussianBlur stdDeviation="4" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      </defs>
+      <polygon points="250,6 425,107 425,309 250,410 75,309 75,107" fill="transparent" stroke="url(#cg)" stroke-width="11" stroke-linejoin="round" filter="url(#cglow)"/>
+      <polygon points="250,32 404,122 404,294 250,384 96,294 96,122" fill="none" stroke="#FFD700" stroke-width="2.5" opacity="0.3"/>
+      <polygon points="168,205 101,92 156,211" fill="url(#cwl)" opacity="1.00"/>
+      <polygon points="167,203 75,135 158,213" fill="url(#cwl)" opacity="0.87"/>
+      <polygon points="164,201 75,176 160,215" fill="url(#cwl)" opacity="0.74"/>
+      <polygon points="162,201 75,208 162,215" fill="url(#cwl)" opacity="0.62"/>
+      <polygon points="165,215 75,243 159,202" fill="url(#cwl)" opacity="0.50"/>
+      <polygon points="167,213 75,286 157,203" fill="url(#cwl)" opacity="0.38"/>
+      <polygon points="332,205 399,92 344,211" fill="url(#cwr)" opacity="1.00"/>
+      <polygon points="333,203 425,135 342,213" fill="url(#cwr)" opacity="0.87"/>
+      <polygon points="336,201 425,176 340,215" fill="url(#cwr)" opacity="0.74"/>
+      <polygon points="338,201 425,208 338,215" fill="url(#cwr)" opacity="0.62"/>
+      <polygon points="335,215 425,243 341,202" fill="url(#cwr)" opacity="0.50"/>
+      <polygon points="333,213 425,286 343,203" fill="url(#cwr)" opacity="0.38"/>
+      <circle cx="250" cy="208" r="90" fill="#1a1d2e" stroke="url(#cg)" stroke-width="8" filter="url(#cglow)"/>
+      <circle cx="250" cy="208" r="59" fill="none" stroke="url(#cg)" stroke-width="3.5"/>
+      <g stroke="#FFD700" stroke-width="4.5" stroke-linecap="round">
+        <line x1="250" y1="118" x2="250" y2="298"/>
+        <line x1="160" y1="208" x2="340" y2="208"/>
+        <line x1="186" y1="144" x2="314" y2="272"/>
+        <line x1="314" y1="144" x2="186" y2="272"/>
+      </g>
+      <circle cx="250" cy="208" r="22" fill="url(#cg)"/>
+      <circle cx="250" cy="208" r="12" fill="#1a1d2e"/>
+      <circle cx="250" cy="208" r="5"  fill="#FFD700"/>
+      <polygon points="250,109 244,118 250,127 256,118" fill="#FFD700"/>
+      <polygon points="250,289 244,298 250,307 256,298" fill="#FFD700"/>
+      <polygon points="151,202 160,208 151,214 160,208" fill="#FFD700"/>
+      <polygon points="340,202 349,208 340,214 349,208" fill="#FFD700"/>
     </svg>
     <div>
       <div class="header-brand-name">FORTUNA</div>
