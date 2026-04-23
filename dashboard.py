@@ -892,22 +892,22 @@ PNL_HTML = """<!DOCTYPE html>
     .header-brand-sub  { font-size: 9px; letter-spacing: 3px; color: #718096; text-transform: uppercase; }
     .back-btn { font-size: 13px; color: #90cdf4; text-decoration: none; }
     .back-btn:hover { color: #e2e8f0; }
-    .section { padding: 16px; }
-    .section-title { font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: #718096; margin-bottom: 12px; }
-    .card { background: #1a1d2e; border: 1px solid #2d3148; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
-    .stats-row { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; margin-bottom: 16px; }
-    .stat-pill { background: #1a1d2e; border: 1px solid #2d3148; border-radius: 10px; padding: 12px; }
-    .stat-pill .label { font-size: 10px; color: #718096; text-transform: uppercase; letter-spacing: 0.5px; }
-    .stat-pill .value { font-size: 18px; font-weight: 700; margin-top: 4px; }
+    .section { padding: 10px; }
+    .section-title { font-size: 10px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: #718096; margin-bottom: 6px; }
+    .card { background: #1a1d2e; border: 1px solid #2d3148; border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
+    .stats-row { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; margin-bottom: 10px; }
+    .stat-pill { background: #1a1d2e; border: 1px solid #2d3148; border-radius: 8px; padding: 8px 10px; }
+    .stat-pill .label { font-size: 9px; color: #718096; text-transform: uppercase; letter-spacing: 0.5px; }
+    .stat-pill .value { font-size: 15px; font-weight: 700; margin-top: 2px; }
     .pos { color: #68d391; } .neg { color: #fc8181; } .neu { color: #e2e8f0; }
-    .chart-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
-    .nav-btn { background: #2d3148; color: #e2e8f0; border: 1px solid #3d4268; border-radius: 6px; padding: 4px 10px; font-size: 13px; font-weight: 600; cursor: pointer; }
+    .chart-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+    .nav-btn { background: #2d3148; color: #e2e8f0; border: 1px solid #3d4268; border-radius: 5px; padding: 2px 8px; font-size: 12px; font-weight: 600; cursor: pointer; }
     .nav-btn:hover { background: #3d4268; }
     .nav-btn:disabled { opacity: 0.3; cursor: default; }
-    .month-label { font-size: 13px; font-weight: 700; min-width: 100px; text-align: center; }
-    .month-meta { display: flex; gap: 16px; margin-bottom: 12px; flex-wrap: wrap; }
-    .month-meta-item .ml { font-size: 10px; color: #718096; }
-    .month-meta-item .mv { font-size: 13px; font-weight: 700; margin-top: 1px; }
+    .month-label { font-size: 12px; font-weight: 700; min-width: 80px; text-align: center; }
+    .month-meta { display: flex; gap: 12px; margin-bottom: 8px; flex-wrap: wrap; }
+    .month-meta-item .ml { font-size: 9px; color: #718096; }
+    .month-meta-item .mv { font-size: 12px; font-weight: 700; margin-top: 1px; }
     .chart-wrap { position: relative; height: 120px; width: 100%; }
     .chart-wrap-sm { position: relative; height: 100px; width: 100%; }
     canvas { position: absolute; top: 0; left: 0; }
