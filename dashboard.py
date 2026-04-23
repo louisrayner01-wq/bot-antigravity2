@@ -19,11 +19,73 @@ import zipfile
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from PIL import Image, ImageDraw
 
 app = FastAPI()
 
 STATE_FILE  = os.environ.get("STATE_FILE",  "/data/state.json")
 TRADES_FILE = os.environ.get("TRADES_FILE", "/data/trades.csv")
+
+
+def _make_logo_png(size: int = 512) -> bytes:
+    """Generate the Fortuna hexagon logo as a PNG using Pillow."""
+    img  = Image.new("RGBA", (size, size), (0, 0, 0, 255))
+    draw = ImageDraw.Draw(img)
+    gold  = (255, 215, 0, 255)
+    black = (0, 0, 0, 255)
+    sx, sy = size / 500, size / 520
+
+    # Hexagon outline
+    hex_pts = [
+        (250*sx, 6*sy), (425*sx, 107*sy), (425*sx, 309*sy),
+        (250*sx, 410*sy), (75*sx, 309*sy), (75*sx, 107*sy),
+    ]
+    stroke_w = max(1, int(11 * sx))
+    for i in range(len(hex_pts)):
+        draw.line([hex_pts[i], hex_pts[(i+1) % len(hex_pts)]], fill=gold, width=stroke_w)
+
+    # Outer circle (black fill, gold stroke)
+    cx, cy = 250*sx, 208*sy
+    r  = 90 * min(sx, sy)
+    ri = 22 * min(sx, sy)
+    bw = max(1, int(8 * sx))
+    draw.ellipse([cx-r, cy-r, cx+r, cy+r], fill=black, outline=gold, width=bw)
+
+    # Inner filled circle
+    draw.ellipse([cx-ri, cy-ri, cx+ri, cy+ri], fill=gold)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+_LOGO_PNG: bytes = b""   # populated on first request
+
+
+@app.get("/apple-touch-icon.png")
+@app.get("/icon.png")
+def serve_icon():
+    global _LOGO_PNG
+    if not _LOGO_PNG:
+        _LOGO_PNG = _make_logo_png(512)
+    return Response(content=_LOGO_PNG, media_type="image/png")
+
+
+@app.get("/manifest.json")
+def serve_manifest():
+    manifest = {
+        "name": "Fortuna",
+        "short_name": "Fortuna",
+        "description": "Automated trading bot",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#0f1117",
+        "theme_color": "#0f1117",
+        "icons": [
+            {"src": "/icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"},
+        ],
+    }
+    return JSONResponse(manifest)
 
 
 # ── API endpoints ──────────────────────────────────────────────────────────────
@@ -295,8 +357,14 @@ HTML = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Fortuna Trading Bot</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 500 520'%3E%3Crect width='500' height='520' fill='%23000'/%3E%3Cpolygon points='250,6 425,107 425,309 250,410 75,309 75,107' fill='none' stroke='%23FFD700' stroke-width='11'/%3E%3Ccircle cx='250' cy='208' r='90' fill='%23000' stroke='%23FFD700' stroke-width='8'/%3E%3Ccircle cx='250' cy='208' r='22' fill='%23FFD700'/%3E%3C/svg%3E" type="image/svg+xml">
+  <title>Fortuna</title>
+  <link rel="icon" href="/icon.png" type="image/png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/manifest.json">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Fortuna">
+  <meta name="theme-color" content="#0f1117">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
