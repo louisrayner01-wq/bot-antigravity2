@@ -66,7 +66,7 @@ risk:
   tf_tiers:
     short: ["5m", "15m"]
     long:  ["1h", "4h", "1d"]
-  max_leverage:         20       # Hard cap — leverage will never exceed this
+  max_leverage:         100      # Hard cap — leverage will never exceed this
 
   # ── Multi-TP partial exit ──────────────────────────────────────────────────
   # TP1: close half the position at 1:1 R/R, then move stop to breakeven.

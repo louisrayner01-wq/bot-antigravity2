@@ -290,72 +290,37 @@ class RiskManager:
     def calc_position(self, entry: float, atr: float,
                       win_rate: Optional[float] = None) -> Tuple[float, int]:
         """
-        Calculates BOTH position size (qty) and leverage dynamically.
+        Calculates position size (qty) and leverage so that:
 
-        The logic:
-          1. We risk HWM × day_risk_pct (e.g. 5% of £100 HWM = £5 on a normal day).
-          2. Stop distance (in price) = ATR × sl_multiplier.
-          3. qty = risk_amount / stop_distance  — the number of units needed
-             so that hitting the stop loses exactly £5 (at 1x leverage).
-          4. Notional value = qty × entry.  If notional > equity we need leverage.
-          5. leverage = ceil(notional / equity), capped at max_leverage.
+          • Liquidation price  ≈  stop-loss price
+          • Margin per trade   =  equity × max_margin_pct  (default 10%)
 
-        This means:
-          • Wide stop (high volatility) → small qty needed → low leverage
-          • Tight stop (low volatility) → large qty needed → high leverage
-          ...but the £ risk is ALWAYS exactly £5 regardless.
+        Logic:
+          1. stop_distance = ATR × sl_atr_mult  (price gap from entry to SL)
+          2. leverage = round(entry / stop_distance), capped at max_leverage (100×).
+             For a long:  liq_price = entry × (1 − 1/L) ≈ SL  when L = entry/stop_distance.
+             For a short: liq_price = entry × (1 + 1/L) ≈ SL  (same distance, same leverage).
+          3. margin = equity × max_margin_pct  (e.g. 10% of £100 = £10)
+          4. qty = (margin × leverage) / entry
+             → notional = margin × leverage  (e.g. £10 × 20× = £200 notional)
+             → if SL is hit the position is liquidated and only the margin (10%) is lost.
         """
+        import math
         if entry <= 0 or atr <= 0:
             return 0.0, 1
 
-        stop_distance = atr * self.sl_atr_mult   # price distance to stop
-        risk_amount   = self.risk_amount_today() # HWM × day_risk_pct
+        stop_distance = atr * self.sl_atr_mult
 
-        # Qty to lose exactly £5 if stop hit (no leverage)
-        qty = risk_amount / stop_distance
+        # Leverage that places liquidation at the stop-loss level
+        raw_leverage = entry / stop_distance
+        leverage = max(1, min(self.max_leverage, round(raw_leverage)))
 
-        # How much notional do we need?
-        notional = qty * entry
-
-        # What leverage does that require given our equity?
-        import math
-        leverage_needed = math.ceil(notional / self.equity) if self.equity > 0 else 1
-        leverage = max(1, min(self.max_leverage, leverage_needed))
-
-        # Optional Kelly cap on qty (never overbet based on win rate history)
-        if win_rate is not None and 0 < win_rate < 1:
-            avg_rr   = self.tp_atr_mult / self.sl_atr_mult
-            kelly_f  = max(0.0, win_rate - (1 - win_rate) / avg_rr) * 0.5  # half-Kelly
-            max_qty  = (self.equity * kelly_f * leverage) / entry
-            qty      = min(qty, max_qty)
-
-        # Margin cap — never commit more than max_margin_pct of equity to one trade.
-        # margin_used = (qty * entry) / leverage, so:
-        # max_qty_by_margin = (equity * max_margin_pct * leverage) / entry
-        if self.equity > 0 and leverage > 0:
-            max_qty_by_margin = (self.equity * self.max_margin_pct * leverage) / entry
-            if qty > max_qty_by_margin:
-                import math as _math
-                self._log_margin_cap(qty, max_qty_by_margin, entry, leverage)
-                qty = max_qty_by_margin
+        # Fixed margin allocation per trade
+        margin = self.equity * self.max_margin_pct
+        qty    = (margin * leverage) / entry
 
         return round(max(qty, 0.0), 6), leverage
 
-    def _log_margin_cap(self, original_qty: float, capped_qty: float,
-                        entry: float, leverage: int) -> None:
-        margin_orig   = (original_qty * entry) / leverage
-        margin_capped = (capped_qty   * entry) / leverage
-        try:
-            import logging
-            logging.getLogger(__name__).info(
-                "📐 Margin cap applied: qty %.6f → %.6f  "
-                "(margin %.2f → %.2f, %.0f%% of equity %.2f)",
-                original_qty, capped_qty,
-                margin_orig, margin_capped,
-                self.max_margin_pct * 100, self.equity,
-            )
-        except Exception:
-            pass
 
     # ── Gate checks ───────────────────────────────────────────────────────────
 
