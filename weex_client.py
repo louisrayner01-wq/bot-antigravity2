@@ -48,6 +48,8 @@ FUTURES_ENDPOINTS = {
     "account":       "/capi/v3/account",
     "position":      "/capi/v3/position/getPositions",
     "open_orders":   "/capi/v3/order/current",
+    "place_tpsl":    "/capi/v3/plan/placeTPSLOrder",
+    "cancel_plan":   "/capi/v3/plan/cancelPlan",
     # Contract OHLCV candles — plain symbol, interval param, same format as spot
     "candles":       "/capi/v3/market/klines",
     # Contract mark/last price ticker — returns markPrice, lastPr, indexPrice
@@ -388,6 +390,43 @@ class WeexClient:
         }
         logger.info("Futures %s  %s  qty=%s", side.upper(), symbol, qty)
         return self._post(FUTURES_ENDPOINTS["place_order"], payload)
+
+    def place_tpsl(self, symbol: str, hold_side: str,
+                   sl_price: float, tp_price: float,
+                   size: Optional[float] = None) -> Dict:
+        """
+        Place a native TP/SL plan order on WEEX futures.
+        hold_side: 'long' | 'short'
+        sl_price:  stop-loss trigger price
+        tp_price:  take-profit trigger price
+        size:      position size (base currency units); omit to close full position
+        Placed as market-execute orders triggered at fill price.
+        """
+        # Strip the _UMCBL suffix if present — contract API uses plain symbol
+        plain = symbol.replace("_UMCBL", "")
+        payload: Dict[str, Any] = {
+            "symbol":                 plain,
+            "marginCoin":             "USDT",
+            "planType":               "profit_loss",
+            "holdSide":               hold_side,
+            "stopLossPrice":          str(round(sl_price, 8)),
+            "stopProfitPrice":        str(round(tp_price, 8)),
+            "stopLossTriggerType":    "fill_price",
+            "stopProfitTriggerType":  "fill_price",
+            "stopLossExecutePrice":   "0",   # market execute
+            "stopProfitExecutePrice": "0",   # market execute
+        }
+        if size is not None:
+            payload["size"] = str(round(size, 6))
+        logger.info("Placing TPSL plan order: %s %s  SL=%.4f  TP=%.4f",
+                    plain, hold_side, sl_price, tp_price)
+        return self._post(FUTURES_ENDPOINTS["place_tpsl"], payload)
+
+    def cancel_tpsl(self, symbol: str, plan_order_id: str) -> Dict:
+        """Cancel a TP/SL plan order by its plan order ID."""
+        plain = symbol.replace("_UMCBL", "")
+        payload = {"symbol": plain, "marginCoin": "USDT", "orderId": plan_order_id}
+        return self._post(FUTURES_ENDPOINTS["cancel_plan"], payload)
 
     def get_futures_balance(self, ref_symbol: str = "BTCUSDT_UMCBL") -> float:
         """Return available USDT balance in the futures (UMCBL) account."""

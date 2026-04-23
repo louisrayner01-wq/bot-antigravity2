@@ -435,6 +435,31 @@ class TradingBot:
     def _open_short(self, s: str, qty: float, p: float) -> Optional[str]:
         return self._futures_order(s, "open_short", qty, p)
 
+    def _place_exchange_tpsl(self, symbol: str, side: str,
+                              sl: float, tp: float, qty: float) -> None:
+        """
+        Place a native TP/SL plan order on WEEX so the exchange will close the
+        position even if the bot process is offline.
+        Skipped in paper mode. Failures are logged but never raise — software
+        monitoring in monitor_exits() remains as a backup.
+        """
+        if self.paper:
+            self.log.info("[PAPER] Would place exchange TPSL: %s %s  SL=%.4f  TP=%.4f",
+                          symbol, side, sl, tp)
+            return
+        hold_side = "long" if side == "long" else "short"
+        try:
+            resp = self.client.place_tpsl(symbol, hold_side, sl, tp, size=qty)
+            plan_id = (resp.get("data") or {}).get("orderId") or (resp.get("data") or {}).get("planOrderId")
+            if plan_id:
+                self.log.info("✅ Exchange TPSL placed: %s %s  SL=%.4f  TP=%.4f  plan_id=%s",
+                              symbol, hold_side, sl, tp, plan_id)
+            else:
+                self.log.warning("⚠️  Exchange TPSL response missing order ID — may not have been placed: %s", resp)
+        except Exception as exc:
+            self.log.error("⚠️  Failed to place exchange TPSL for %s: %s — software monitoring active",
+                           symbol, exc)
+
     def _close_long(self, s: str, qty: float, p: float) -> Optional[str]:
         return self._futures_order(s, "close_long",  qty, p)
 
@@ -1246,6 +1271,7 @@ class TradingBot:
                     confidence=confidence,
                 )
                 self.risk.open_position(pos, slot_key=slot_key)
+                self._place_exchange_tpsl(symbol, "long", sl, tp, qty)
                 self.log.info("🟢 LONG  %s[%s]  qty=%.5f @ £%.4f  SL=£%.4f  TP=£%.4f  conf=%.2f",
                               symbol, timeframe_label, qty, price, sl, tp, confidence)
                 notify_open(symbol, "long", timeframe_label, price, sl, tp,
@@ -1268,6 +1294,7 @@ class TradingBot:
                     confidence=confidence,
                 )
                 self.risk.open_position(pos, slot_key=slot_key)
+                self._place_exchange_tpsl(symbol, "short", sl, tp, qty)
                 self.log.info("🔴 SHORT %s[%s]  qty=%.5f @ £%.4f  SL=£%.4f  TP=£%.4f  conf=%.2f",
                               symbol, timeframe_label, qty, price, sl, tp, confidence)
                 notify_open(symbol, "short", timeframe_label, price, sl, tp,
