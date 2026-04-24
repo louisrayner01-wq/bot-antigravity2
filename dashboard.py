@@ -357,6 +357,7 @@ function onAccountChange() {
   _scaleFactor = getScaleFactor();
   renderState();
   renderTrades();
+  renderWeeklyPnl();
 }
 
 async function loadState() {
@@ -619,6 +620,8 @@ HTML = """<!DOCTYPE html>
   });
 
   // Weekly PnL from calendar data
+  var _rawWeekly = { tw: { pnl: 0, trades: 0 }, lw: { pnl: 0, trades: 0 } };
+
   function getISOWeek(date) {
     var d = new Date(date);
     var day = d.getDay() || 7;
@@ -626,6 +629,20 @@ HTML = """<!DOCTYPE html>
     d.setDate(d.getDate() + 4 - day);
     var yearStart = new Date(d.getFullYear(), 0, 1);
     return d.getFullYear() + "-W" + Math.ceil(((d - yearStart) / 86400000 + 1) / 7);
+  }
+
+  function renderWeeklyPnl() {
+    var sf = _scaleFactor;
+    function setPnl(idPnl, idTrades, data) {
+      var scaled = data.pnl * sf;
+      var el = document.getElementById(idPnl);
+      var sign = scaled >= 0 ? "+" : "";
+      el.textContent = sign + "\xa3" + Math.abs(scaled).toFixed(2);
+      el.className = "stat-value " + (scaled > 0 ? "pos" : scaled < 0 ? "neg" : "neu");
+      document.getElementById(idTrades).textContent = data.trades + " trade" + (data.trades !== 1 ? "s" : "");
+    }
+    setPnl("week-pnl",     "week-trades",     _rawWeekly.tw);
+    setPnl("lastweek-pnl", "lastweek-trades", _rawWeekly.lw);
   }
 
   function loadWeeklyPnl() {
@@ -639,20 +656,12 @@ HTML = """<!DOCTYPE html>
 
       Object.keys(days).forEach(function(date) {
         var w = getISOWeek(new Date(date));
-        if (w === thisWeek)  { tw.pnl += days[date].pnl; tw.trades += days[date].trades; }
-        if (w === lastWeek)  { lw.pnl += days[date].pnl; lw.trades += days[date].trades; }
+        if (w === thisWeek) { tw.pnl += days[date].pnl; tw.trades += days[date].trades; }
+        if (w === lastWeek) { lw.pnl += days[date].pnl; lw.trades += days[date].trades; }
       });
 
-      function setPnl(idPnl, idTrades, data) {
-        var el = document.getElementById(idPnl);
-        var sign = data.pnl >= 0 ? "+" : "";
-        el.textContent = sign + "$" + Math.abs(data.pnl).toFixed(2);
-        el.className = "stat-value " + (data.pnl > 0 ? "pos" : data.pnl < 0 ? "neg" : "neu");
-        document.getElementById(idTrades).textContent = data.trades + " trade" + (data.trades !== 1 ? "s" : "");
-      }
-
-      setPnl("week-pnl",     "week-trades",     tw);
-      setPnl("lastweek-pnl", "lastweek-trades", lw);
+      _rawWeekly = { tw: tw, lw: lw };
+      renderWeeklyPnl();
     });
   }
 
