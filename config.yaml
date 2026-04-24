@@ -142,7 +142,7 @@ strategy:
   # 03:00 — worst single hour, 8/12 strategies below 45% WR
   # 10:00 — surprisingly weak across most strategies
   # 21:00 — 9/12 strategies below 50% WR
-  blocked_hours_utc: [2, 3, 6, 10, 21]   # added 02:00 (BTC/ETH weak) and 06:00 (all three weak on 5m)
+  blocked_hours_utc: [2, 3, 4, 6, 10, 11, 20, 21]   # 04:00 (40% WR), 11:00 (25% WR), 20:00 (44% WR) added from walk-forward analysis
 
   # ── Time-of-day risk multipliers ──────────────────────────────────────────
   # Applied on top of day_risk_pct. 12:00-15:00 UTC is the golden window.
