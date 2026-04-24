@@ -1,8 +1,16 @@
 # Live Trades
-_Updated: 2026-04-23 08:05 UTC_
-_Total: 71 trades_
+_Updated: 2026-04-24 00:12 UTC_
+_Total: 74 trades_
 
-**Overall: 32W / 39L  (45% WR)  Total PnL: +29.02 USDT**
+**Overall: 32W / 42L  (43% WR)  Total PnL: +6.76 USDT**
+
+## 2026-04-23  —  3 trades  |  0% WR  |  -22.26 USDT
+
+| Time (UTC) | Slot | Side | Conf | Outcome | PnL USDT | PnL % | Equity |
+|------------|------|------|------|---------|----------|-------|--------|
+| 08:18 | SOLUSDT_UMCBL_5m+4h | LONG | 0.62 | ❌ SL | -6.13 | -0.38% | £116.39 |
+| 08:18 | BTCUSDT_UMCBL_5m+4h | LONG | 0.55 | ❌ SL | -10.29 | -0.49% | £106.10 |
+| 10:18 | BTCUSDT_UMCBL_1h+1d | LONG | 0.62 | ❌ SL | -5.84 | -1.49% | £100.26 |
 
 ## 2026-04-22  —  9 trades  |  78% WR  |  +45.65 USDT
 
