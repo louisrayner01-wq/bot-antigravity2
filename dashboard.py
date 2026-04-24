@@ -450,7 +450,7 @@ HTML = """<!DOCTYPE html>
     .updated { font-size: 11px; color: #718096; margin-top: 2px; }
     .section { padding: 16px; }
     .section-title { font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: #718096; margin-bottom: 10px; }
-    .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
     .stat-card { background: #1a1d2e; border: 1px solid #2d3148; border-radius: 10px; padding: 14px; }
     .stat-label { font-size: 11px; color: #718096; margin-bottom: 4px; }
     .stat-value { font-size: 22px; font-weight: 700; }
@@ -573,6 +573,16 @@ HTML = """<!DOCTYPE html>
       <div class="stat-value neu" id="pos-count">&#x2014;</div>
       <div class="stat-sub" id="pos-sub"></div>
     </div>
+    <div class="stat-card">
+      <div class="stat-label">This Week P&amp;L</div>
+      <div class="stat-value" id="week-pnl">&#x2014;</div>
+      <div class="stat-sub" id="week-trades"></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Last Week P&amp;L</div>
+      <div class="stat-value" id="lastweek-pnl">&#x2014;</div>
+      <div class="stat-sub" id="lastweek-trades"></div>
+    </div>
   </div>
 </div>
 
@@ -607,6 +617,46 @@ HTML = """<!DOCTYPE html>
     var fmt = val >= 1000 ? "\xa3" + (val/1000).toFixed(0) + ",000" : "\xa3" + val;
     document.getElementById("acct-banner-size").textContent = fmt;
   });
+
+  // Weekly PnL from calendar data
+  function getISOWeek(date) {
+    var d = new Date(date);
+    var day = d.getDay() || 7;
+    d.setHours(0,0,0,0);
+    d.setDate(d.getDate() + 4 - day);
+    var yearStart = new Date(d.getFullYear(), 0, 1);
+    return d.getFullYear() + "-W" + Math.ceil(((d - yearStart) / 86400000 + 1) / 7);
+  }
+
+  function loadWeeklyPnl() {
+    fetch("/api/calendar").then(function(r) { return r.json(); }).then(function(days) {
+      var thisWeek = getISOWeek(new Date());
+      var lastWeekDate = new Date(); lastWeekDate.setDate(lastWeekDate.getDate() - 7);
+      var lastWeek = getISOWeek(lastWeekDate);
+
+      var tw = { pnl: 0, trades: 0 };
+      var lw = { pnl: 0, trades: 0 };
+
+      Object.keys(days).forEach(function(date) {
+        var w = getISOWeek(new Date(date));
+        if (w === thisWeek)  { tw.pnl += days[date].pnl; tw.trades += days[date].trades; }
+        if (w === lastWeek)  { lw.pnl += days[date].pnl; lw.trades += days[date].trades; }
+      });
+
+      function setPnl(idPnl, idTrades, data) {
+        var el = document.getElementById(idPnl);
+        var sign = data.pnl >= 0 ? "+" : "";
+        el.textContent = sign + "$" + Math.abs(data.pnl).toFixed(2);
+        el.className = "stat-value " + (data.pnl > 0 ? "pos" : data.pnl < 0 ? "neg" : "neu");
+        document.getElementById(idTrades).textContent = data.trades + " trade" + (data.trades !== 1 ? "s" : "");
+      }
+
+      setPnl("week-pnl",     "week-trades",     tw);
+      setPnl("lastweek-pnl", "lastweek-trades", lw);
+    });
+  }
+
+  loadWeeklyPnl();
 </script>
 </body>
 </html>"""
