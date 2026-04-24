@@ -1590,7 +1590,7 @@ class TradingBot:
                 self.log.warning("  No candles returned for %s — skipping", symbol)
                 continue
             price = self.live_price(symbol, df)
-            entry_dt = (pd.Timestamp(pos.entry_time).tz_localize(None)
+            entry_dt = (pd.Timestamp(pos.entry_time).tz_convert(None)
                         if pd.Timestamp(pos.entry_time).tzinfo is not None
                         else pd.Timestamp(pos.entry_time))
             post_entry = df[df["timestamp"] > entry_dt]
@@ -1651,7 +1651,7 @@ class TradingBot:
             # Scan ALL post-entry candles so a TP/SL wick from any candle in the
             # window is caught even if price has since retraced.
             if self.paper and len(df) >= 2:
-                entry_dt = pd.Timestamp(pos.entry_time).tz_localize(None) if pd.Timestamp(pos.entry_time).tzinfo is not None else pd.Timestamp(pos.entry_time)
+                entry_dt = pd.Timestamp(pos.entry_time).tz_convert(None) if pd.Timestamp(pos.entry_time).tzinfo is not None else pd.Timestamp(pos.entry_time)
                 post_entry = df[df["timestamp"] > entry_dt]
                 if not post_entry.empty:
                     candle_high = float(post_entry["high"].max())
