@@ -47,11 +47,44 @@ class TradeLogger:
     def __init__(self, trades_file: str):
         self.trades_file   = trades_file
         self.skipped_file  = trades_file.replace(".csv", "_skipped.csv")
+        self.stats_file    = trades_file.replace(".csv", "_strategy_stats.json")
         os.makedirs(os.path.dirname(trades_file) or ".", exist_ok=True)
         self._migrate_csv()
         self._write_header()
         self._write_skipped_header()
-        self.records: List[dict] = []
+        self.records: List[dict] = self._load_existing_records()
+
+    def _load_existing_records(self) -> List[dict]:
+        """Load all rows from trades.csv into memory on startup so stats survive restarts."""
+        if not os.path.exists(self.trades_file):
+            return []
+        rows = []
+        try:
+            with open(self.trades_file, newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    # Cast numeric fields so stats math works without type errors
+                    cast: dict = {}
+                    for field in self.FIELDS:
+                        val = row.get(field, "")
+                        if field in ("pnl_usdt", "pnl_pct", "equity_after",
+                                     "entry_price", "exit_price", "quantity",
+                                     "confidence", "mae_pct", "mfe_pct"):
+                            try:
+                                cast[field] = float(val)
+                            except (ValueError, TypeError):
+                                cast[field] = 0.0
+                        elif field in ("leverage", "candles_held", "wick_breach"):
+                            try:
+                                cast[field] = int(val)
+                            except (ValueError, TypeError):
+                                cast[field] = 0
+                        else:
+                            cast[field] = val
+                    rows.append(cast)
+        except Exception as exc:
+            logger.warning("Could not pre-load trade records: %s", exc)
+        return rows
 
     def _migrate_csv(self):
         """
@@ -190,6 +223,46 @@ class TradeLogger:
         logger.info("%s  %s %s | PnL: %.2f%% (%.2f USDT) | Equity: %.2f",
                     emoji, row["side"].upper(), row["pair"],
                     row["pnl_pct"], row["pnl_usdt"], equity_after)
+        self._update_strategy_stats(row)
+
+    def _update_strategy_stats(self, row: dict):
+        """
+        Rebuild and persist per-slot stats to trades_strategy_stats.json.
+        File is private — never pushed to GitHub.
+        Stats: trades, wins, win_rate, avg_confidence, total_pnl_usdt, avg_pnl_usdt.
+        """
+        import json
+
+        # Re-read all completed trades from the in-memory list (fast, already loaded)
+        # Fall back to reading the CSV if records list is empty (e.g. first trade after restart)
+        all_rows = self.records if self.records else []
+
+        by_slot: dict = {}
+        for r in all_rows:
+            slot = r.get("slot_key") or r.get("pair", "unknown")
+            by_slot.setdefault(slot, []).append(r)
+
+        stats = {}
+        for slot, rows in by_slot.items():
+            wins  = [r for r in rows if r.get("pnl_usdt", 0) > 0]
+            confs = [r["confidence"] for r in rows
+                     if isinstance(r.get("confidence"), (int, float)) and r["confidence"] > 0]
+            stats[slot] = {
+                "trades":          len(rows),
+                "wins":            len(wins),
+                "losses":          len(rows) - len(wins),
+                "win_rate_pct":    round(len(wins) / len(rows) * 100, 1) if rows else 0,
+                "avg_confidence":  round(sum(confs) / len(confs), 4) if confs else None,
+                "total_pnl_usdt":  round(sum(r.get("pnl_usdt", 0) for r in rows), 2),
+                "avg_pnl_usdt":    round(sum(r.get("pnl_usdt", 0) for r in rows) / len(rows), 2),
+                "last_trade":      rows[-1].get("timestamp", ""),
+            }
+
+        try:
+            with open(self.stats_file, "w") as f:
+                json.dump(stats, f, indent=2)
+        except Exception as exc:
+            logger.warning("Could not write strategy stats: %s", exc)
 
     def print_summary(self):
         if not self.records:

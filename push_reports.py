@@ -308,22 +308,20 @@ def build_live_trades(trades_file: str) -> str:
         lines += [
             f"## {date}  —  {len(day_rows)} trades  |  {day_wr:.0f}% WR  |  {day_pnl:+.2f} USDT",
             "",
-            "| Time (UTC) | Slot | Side | Conf | Outcome | PnL USDT | PnL % | Equity |",
-            "|------------|------|------|------|---------|----------|-------|--------|",
+            "| Time (UTC) | Slot | Side | Outcome | PnL USDT | PnL % | Equity |",
+            "|------------|------|------|---------|----------|-------|--------|",
         ]
         for r in day_rows:
             time_str = r.get("timestamp", "")[11:16]
             slot     = r.get("slot_key") or r.get("pair", "")
             side     = r.get("side", "").upper()
-            conf_raw = r.get("confidence", "")
-            conf_str = f"{float(conf_raw):.2f}" if conf_raw else "—"
             exit_rsn = r.get("exit_reason", "")
             pnl_u    = float(r.get("pnl_usdt", 0))
             pnl_p    = float(r.get("pnl_pct",  0))
             equity   = float(r.get("equity_after", 0))
             outcome  = "✅ TP" if exit_rsn == "take_profit" else "❌ SL"
             lines.append(
-                f"| {time_str} | {slot} | {side} | {conf_str} | {outcome} | "
+                f"| {time_str} | {slot} | {side} | {outcome} | "
                 f"{pnl_u:+.2f} | {pnl_p:+.2f}% | £{equity:.2f} |"
             )
         lines.append("")
@@ -348,6 +346,14 @@ def push_reports(data_dir: str = "/data"):
     live_md = build_live_trades(trades_file)
     _push_file(repo, "reports/live_trades.md", live_md,
                f"reports: live trades ({now_str})", token)
+
+    # ── Strategy stats — private JSON for internal analysis ──────────────────
+    stats_file = os.path.join(data_dir, "trades_strategy_stats.json")
+    if os.path.exists(stats_file):
+        with open(stats_file) as f:
+            stats_content = f.read()
+        _push_file(repo, "internal/strategy_stats.json", stats_content,
+                   f"internal: strategy stats ({now_str})", token)
 
     # ── Backtest summary — only if results file exists ────────────────────────
     bt_path = os.path.join(data_dir, "backtest_results.json")
