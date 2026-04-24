@@ -79,6 +79,7 @@ class RiskManager:
         self.max_daily_loss_pct = rc.get("max_daily_loss_pct", 0.12)  # 12% of current equity
         self.min_holding        = sc.get("min_holding_candles", 2)
         self.max_leverage       = rc.get("max_leverage", 20)
+        self.max_sl_pct         = rc.get("max_sl_pct", 0.025)        # skip if SL > 2.5% from entry
         # max_margin_pct not used — margin per trade comes from risk_amount_today() which
         # applies day-of-week % and hour multiplier so risk varies by schedule.
 

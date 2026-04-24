@@ -1205,6 +1205,12 @@ class TradingBot:
             htf_label=htf_lbl, htf_direction=htf_direction,
         )
 
+        sl_pct = abs(price - sl) / price
+        if sl_pct > self.risk.max_sl_pct:
+            self.log.info("  ⛔ %s[%s]  SL too wide %.2f%% > max %.2f%% — skipped",
+                          symbol, timeframe_label, sl_pct * 100, self.risk.max_sl_pct * 100)
+            return False
+
         if not rr_ok:
             self.log.info("  ⛔ %s[%s]  R/R %.2f < min %.2f — skipped",
                           symbol, timeframe_label, actual_rr, min_rr)

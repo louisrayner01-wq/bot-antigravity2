@@ -55,6 +55,7 @@ risk:
   stop_loss_atr_mult:   2.2      # MAE-calibrated from 2221 simulated trades (was 1.5 — too tight)
   take_profit_atr_mult: 3.5      # MAE-calibrated from 2221 simulated trades (was 3.0)
   min_rr_ratio:         1.5      # Reject any trade where actual R/R falls below 1.5
+  max_sl_pct:           0.025    # Skip entry if SL is >2.5% from entry — high-vol entries have 36% WR
   max_open_positions:   5        # Tier 1 strategies only — reduces correlated crash exposure
   max_daily_loss_pct:   0.10     # 10% of current equity — tighter cap for real money protection
 
