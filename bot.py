@@ -1614,6 +1614,27 @@ class TradingBot:
             self.log.info("  Exit check result: %s", exit_reason or "hold")
             if exit_reason in ("stop_loss", "take_profit"):
                 exit_price = pos.stop_loss if exit_reason == "stop_loss" else pos.take_profit
+
+                # Find the actual candle where the TP/SL was breached so we can
+                # log the real exit time rather than the startup detection time.
+                actual_exit_ts = None
+                if not post_entry.empty:
+                    if exit_reason == "take_profit" and pos.side == "long":
+                        hit = post_entry[post_entry["high"] >= pos.take_profit]
+                    elif exit_reason == "take_profit" and pos.side == "short":
+                        hit = post_entry[post_entry["low"] <= pos.take_profit]
+                    elif exit_reason == "stop_loss" and pos.side == "long":
+                        hit = post_entry[post_entry["low"] <= pos.stop_loss]
+                    else:
+                        hit = post_entry[post_entry["high"] >= pos.stop_loss]
+                    if not hit.empty:
+                        actual_exit_ts = hit.iloc[0]["timestamp"]
+
+                delay_mins = None
+                if actual_exit_ts is not None:
+                    delay_mins = int((pd.Timestamp.utcnow() - pd.Timestamp(actual_exit_ts)).total_seconds() / 60)
+                    self.log.info("  Actual exit candle: %s (~%d min ago)", actual_exit_ts, delay_mins)
+
                 self.log.info("🚨 Startup catch: %s  %s[%s]  @ £%.4f",
                               exit_reason.upper(), symbol, tf_label, exit_price)
                 self._close_pos(symbol, pos.quantity, exit_price, pos.side)
@@ -1622,9 +1643,15 @@ class TradingBot:
                     trade["slot_key"] = slot_key
                     self.logger.log_trade(trade, self.risk.equity, exit_reason)
                     self._report_trade(trade, exit_reason)
-                    notify_close(symbol, trade["side"], tf_label,
-                                 trade["entry_price"], trade["exit_price"],
-                                 trade["pnl_usdt"], self.risk.equity, exit_reason)
+                    # Only notify via Telegram if the exit was recent (≤ 60 min).
+                    # Older catches are logged internally but suppressed from Telegram
+                    # to avoid stale signals appearing live.
+                    if delay_mins is None or delay_mins <= 60:
+                        notify_close(symbol, trade["side"], tf_label,
+                                     trade["entry_price"], trade["exit_price"],
+                                     trade["pnl_usdt"], self.risk.equity, exit_reason)
+                    else:
+                        self.log.info("  Telegram suppressed — exit was ~%d min ago (stale)", delay_mins)
 
     def monitor_exits(self):
         """
