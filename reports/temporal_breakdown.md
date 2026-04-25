@@ -1,5 +1,5 @@
 # Temporal Breakdown — Win Rate by Day & Month
-_Generated: 2026-04-25 08:16 UTC_
+_Generated: 2026-04-25 08:31 UTC_
 
 ## SOLUSDT 1d
 Overall: **5 trades**, **40.0% WR**
