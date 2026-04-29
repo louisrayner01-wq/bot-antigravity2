@@ -66,7 +66,7 @@ TF_LABELS = {
 # backfill 2 years of data.  Spot and futures prices for BTC/ETH/SOL are
 # effectively identical for ML training purposes.
 # _UMCBL symbols are only used for live order execution in weex_client.
-SYMBOLS: List[str] = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+SYMBOLS: List[str] = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
 
 REQUEST_DELAY = 0.5   # seconds between requests (rate-limit safety)
 
