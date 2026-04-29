@@ -76,10 +76,12 @@ class RiskManager:
         self.tp1_close_pct      = rc.get("take_profit_1_close_pct", 0.50)
         self.min_rr             = rc["min_rr_ratio"]
         self.max_open           = rc["max_open_positions"]
-        self.max_daily_loss_pct = rc.get("max_daily_loss_pct", 0.12)  # 12% of current equity
+        self.max_longs          = rc.get("max_longs", 99)
+        self.max_shorts         = rc.get("max_shorts", 99)
+        self.max_daily_loss_pct = rc.get("max_daily_loss_pct", 0.12)
         self.min_holding        = sc.get("min_holding_candles", 2)
         self.max_leverage       = rc.get("max_leverage", 20)
-        self.max_sl_pct         = rc.get("max_sl_pct", 0.025)        # skip if SL > 2.5% from entry
+        self.max_sl_pct         = rc.get("max_sl_pct", 0.025)
         # max_margin_pct not used — margin per trade comes from risk_amount_today() which
         # applies day-of-week % and hour multiplier so risk varies by schedule.
 
@@ -368,13 +370,17 @@ class RiskManager:
             for k in self.open_positions
         )
 
-    def can_open(self, slot_key: str) -> Tuple[bool, str]:
+    def can_open(self, slot_key: str, side: str = "") -> Tuple[bool, str]:
         """
-        TF-stratified slot gating.
+        Slot gating with direction exposure cap.
 
-        Each symbol gets one position per tier (short=5m/15m, long=1h+).
-        A 1h trade on BTC does NOT block a 15m signal on BTC — they occupy
-        different tiers. Max open positions is 6 (2 tiers × 3 symbols).
+        Checks (in order):
+          1. Daily loss halt
+          2. Slot already open
+          3. Symbol already has open position (any TF)
+          4. Max open positions
+          5. Direction cap — max_longs / max_shorts across all open positions
+          6. Minimum equity
         """
         if self.trading_halted():
             return False, "daily loss limit reached"
@@ -386,6 +392,13 @@ class RiskManager:
             return False, f"{base} already has an open {tier}-tier position"
         if len(self.open_positions) >= self.max_open:
             return False, f"max open positions ({self.max_open}) reached"
+        if side:
+            open_longs  = sum(1 for p in self.open_positions.values() if p.side == "long")
+            open_shorts = sum(1 for p in self.open_positions.values() if p.side == "short")
+            if side == "long" and open_longs >= self.max_longs:
+                return False, f"direction cap: already {open_longs} longs open (max {self.max_longs})"
+            if side == "short" and open_shorts >= self.max_shorts:
+                return False, f"direction cap: already {open_shorts} shorts open (max {self.max_shorts})"
         if self.equity < self.risk_amount_today():
             return False, f"equity (£{self.equity:.2f}) below minimum trade risk (£{self.risk_amount_today():.2f})"
         return True, "ok"

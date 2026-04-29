@@ -495,6 +495,39 @@ class TradingStrategy:
                 return -1
             return 0
 
+    def htf_adx(self, higher_tf_df: pd.DataFrame, period: int = 14) -> float | None:
+        """
+        Calculate ADX on the HTF DataFrame using Wilder's smoothing.
+        Returns the most recent ADX value, or None if insufficient data.
+        ADX < 25 = choppy/ranging; ADX >= 25 = trending.
+        """
+        if higher_tf_df is None or len(higher_tf_df) < period * 3:
+            return None
+        df = higher_tf_df.copy()
+        high  = df["high"].astype(float)
+        low   = df["low"].astype(float)
+        close = df["close"].astype(float)
+        prev_close = close.shift(1)
+        prev_high  = high.shift(1)
+        prev_low   = low.shift(1)
+        tr = pd.concat([
+            high - low,
+            (high - prev_close).abs(),
+            (low  - prev_close).abs(),
+        ], axis=1).max(axis=1)
+        plus_dm  = (high - prev_high).clip(lower=0).where(
+            (high - prev_high) > (prev_low - low), 0)
+        minus_dm = (prev_low - low).clip(lower=0).where(
+            (prev_low - low) > (high - prev_high), 0)
+        alpha    = 1 / period
+        atr_w    = tr.ewm(alpha=alpha, adjust=False).mean()
+        plus_di  = 100 * plus_dm.ewm(alpha=alpha, adjust=False).mean() / atr_w.replace(0, float("nan"))
+        minus_di = 100 * minus_dm.ewm(alpha=alpha, adjust=False).mean() / atr_w.replace(0, float("nan"))
+        dx       = (100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, float("nan"))).fillna(0)
+        adx      = dx.ewm(alpha=alpha, adjust=False).mean()
+        val = adx.iloc[-1]
+        return float(val) if not pd.isna(val) else None
+
     def apply_confluence(self,
                          signal: int,
                          buy_p: float,

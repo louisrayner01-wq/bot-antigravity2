@@ -1219,7 +1219,7 @@ class TradingBot:
             self.log.info("  ⛔ %s[%s]  EV gate — %s", symbol, timeframe_label, ev_reason)
             return False
 
-        can_open, reason = self.risk.can_open(slot_key)
+        can_open, reason = self.risk.can_open(slot_key, side=side)
         if not can_open:
             self.log.info("  ⛔ %s[%s]  %s", symbol, timeframe_label, reason)
             # Record skipped signals caused by the per-symbol position limit so we
@@ -1815,8 +1815,10 @@ class TradingBot:
             stype      = strat.get("strategy_type", "single")
             dir_tf_min = strat.get("dir_tf_min")
 
+            htf_df = None
             if stype == "mtf" and dir_tf_min:
                 dir_df = self.fetch_candles(symbol, tf=dir_tf_min, limit=100)
+                htf_df = dir_df
                 dir_lbl = TF_LABELS.get(dir_tf_min, dir_tf_min)
                 signal, buy_p, sell_p = self.strategy.predict_mtf(
                     df, dir_df, symbol=symbol,
@@ -1843,6 +1845,26 @@ class TradingBot:
             if signal == 0:
                 results.append(f"{name}[{tf_label}]→HOLD(b{buy_p:.2f}/s{sell_p:.2f})")
                 continue
+
+            # Per-slot confidence gate (e.g. XRP requires 0.60)
+            slot_conf_thresholds = self.cfg.get("risk", {}).get("slot_conf_threshold", {})
+            slot_min_conf = slot_conf_thresholds.get(slot_key, 0.0)
+            conf_val = buy_p if signal == BUY else sell_p
+            if slot_min_conf > 0 and conf_val < slot_min_conf:
+                self.log.info("  ⛔ %s[%s]  conf %.3f < slot min %.2f — skipped",
+                              symbol, tf_label, conf_val, slot_min_conf)
+                results.append(f"{name}[{tf_label}]→CONF_GATE")
+                continue
+
+            # ADX regime filter — skip entry if 4h is choppy (ADX < threshold)
+            adx_threshold = self.cfg.get("risk", {}).get("adx_threshold", 0)
+            if adx_threshold > 0 and htf_df is not None and not htf_df.empty:
+                adx_val = self.strategy.htf_adx(htf_df)
+                if adx_val is not None and adx_val < adx_threshold:
+                    self.log.info("  ⛔ %s[%s]  4h ADX %.1f < %.0f (choppy) — skipped",
+                                  symbol, tf_label, adx_val, adx_threshold)
+                    results.append(f"{name}[{tf_label}]→ADX_BLOCK(adx={adx_val:.1f})")
+                    continue
 
             entered = self._try_enter(symbol, df, price, atr, htf_direction,
                                       slot_key=slot_key, timeframe_label=tf_label,

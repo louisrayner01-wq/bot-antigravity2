@@ -56,8 +56,11 @@ risk:
   take_profit_atr_mult: 3.5      # MAE-calibrated from 2221 simulated trades (was 3.0)
   min_rr_ratio:         1.5      # Reject any trade where actual R/R falls below 1.5
   max_sl_pct:           0.025    # Skip entry if SL is >2.5% from entry — high-vol entries have 36% WR
-  max_open_positions:   5        # Tier 1 strategies only — reduces correlated crash exposure
-  max_daily_loss_pct:   0.10     # 10% of current equity — tighter cap for real money protection
+  max_open_positions:   4        # One per slot (BTC/ETH/SOL/XRP 5m+4h)
+  max_longs:            2        # Direction cap — max 2 longs open simultaneously
+  max_shorts:           2        # Direction cap — max 2 shorts open simultaneously
+  max_daily_loss_pct:   0.10     # 10% of HWM — daily halt safety net
+  adx_threshold:        25       # Skip entry if 4h ADX < 25 (choppy/ranging market)
 
   # ── TF-stratified slot tiers ───────────────────────────────────────────────
   # Each symbol gets one position per tier at a time.
@@ -128,15 +131,13 @@ strategy:
   # ── Fixed strategy list ────────────────────────────────────────────────────
   # Hardcoded strategies — bypasses analysis discovery entirely.
   # Proven profitable in 2yr backtest via strategy_search.py (2026-04-12).
-  # Short tier (5m+4h): fast turnover ~2h avg hold, 3 slots
-  # Long tier (1h+1d):  trend-following, 3 slots — day/time blocks still apply
+  # 4x 5m+4h slots — 1h+1d slots removed (6 trades/2yr, dormant, large SL risk)
+  # XRP added at 0.60 confidence gate (validated in 3yr walk-forward backtest)
   fixed_strategies:
-    - {symbol: "BTCUSDT_UMCBL", name: "BTC", tf_min: "5",    htf_min: "240",  slot_key: "BTCUSDT_UMCBL_5m+4h",  strategy_type: "confluence"}
-    - {symbol: "ETHUSDT_UMCBL", name: "ETH", tf_min: "5",    htf_min: "240",  slot_key: "ETHUSDT_UMCBL_5m+4h",  strategy_type: "confluence"}
-    - {symbol: "SOLUSDT_UMCBL", name: "SOL", tf_min: "5",    htf_min: "240",  slot_key: "SOLUSDT_UMCBL_5m+4h",  strategy_type: "confluence"}
-    - {symbol: "BTCUSDT_UMCBL", name: "BTC", tf_min: "60",   htf_min: "1440", slot_key: "BTCUSDT_UMCBL_1h+1d",  strategy_type: "confluence"}
-    - {symbol: "ETHUSDT_UMCBL", name: "ETH", tf_min: "60",   htf_min: "1440", slot_key: "ETHUSDT_UMCBL_1h+1d",  strategy_type: "confluence"}
-    - {symbol: "SOLUSDT_UMCBL", name: "SOL", tf_min: "60",   htf_min: "1440", slot_key: "SOLUSDT_UMCBL_1h+1d",  strategy_type: "confluence"}
+    - {symbol: "BTCUSDT_UMCBL", name: "BTC", tf_min: "5", htf_min: "240", slot_key: "BTCUSDT_UMCBL_5m+4h", strategy_type: "confluence"}
+    - {symbol: "ETHUSDT_UMCBL", name: "ETH", tf_min: "5", htf_min: "240", slot_key: "ETHUSDT_UMCBL_5m+4h", strategy_type: "confluence"}
+    - {symbol: "SOLUSDT_UMCBL", name: "SOL", tf_min: "5", htf_min: "240", slot_key: "SOLUSDT_UMCBL_5m+4h", strategy_type: "confluence"}
+    - {symbol: "XRPUSDT_UMCBL", name: "XRP", tf_min: "5", htf_min: "240", slot_key: "XRPUSDT_UMCBL_5m+4h", strategy_type: "confluence"}
 
   # ── Time-of-day entry gates ───────────────────────────────────────────────
   # Block new entries during consistently weak UTC hours (across all strategies).
@@ -159,14 +160,11 @@ strategy:
   # ── Day-of-week slot blocks ────────────────────────────────────────────────
   # Slots listed here will not enter new trades on the specified days.
   # Days: 0=Mon 1=Tue 2=Wed 3=Thu 4=Fri 5=Sat 6=Sun
-  day_blocks:
-    1:  # Tuesday — block strategies with poor Tuesday edge
-      - "BTCUSDT_UMCBL_1h+1d"   # 37.0% WR on Tuesdays
-      - "ETHUSDT_UMCBL_1h+1d"   # 43.8% WR on Tuesdays
-      - "SOLUSDT_UMCBL_1h+1d"   # 35.0% WR on Tuesdays
-    6:  # Sunday — block strategies with poor Sunday edge
-      - "SOLUSDT_UMCBL_1h+1d"   # 42.9% WR on Sundays
-      - "ETHUSDT_UMCBL_1h+1d"   # 47.6% WR on Sundays
+  day_blocks: {}  # No per-slot day blocks needed — all slots are 5m+4h
+
+  # Per-slot confidence threshold overrides (default is buy/sell_threshold above)
+  slot_conf_threshold:
+    "XRPUSDT_UMCBL_5m+4h": 0.60   # XRP needs higher gate — validated in 3yr backtest
 
   # ── Monthly withdrawal rule ────────────────────────────────────────────────
   # At end of each month: withdraw 50% of net profit above starting capital floor.
