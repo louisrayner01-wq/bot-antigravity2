@@ -326,8 +326,14 @@ class HistoricalMAEBacktest:
             return []
 
         # ── Resolve model + scaler for this symbol ────────────────────────────
-        sym_key = symbol.replace("_SPBL", "").replace("_UMCBL", "")
-        if sym_key in strategy.symbol_models:
+        # Try symbol+timeframe key first (e.g. "ETHUSDT_5m"), then bare symbol
+        sym_key    = symbol.replace("_SPBL", "").replace("_UMCBL", "")
+        sym_key_tf = f"{sym_key}_{tf_label}" if tf_label else sym_key
+        if sym_key_tf in strategy.symbol_models:
+            model  = strategy.symbol_models[sym_key_tf]
+            scaler = strategy.symbol_scalers[sym_key_tf]
+            feats  = strategy.symbol_features[sym_key_tf]
+        elif sym_key in strategy.symbol_models:
             model  = strategy.symbol_models[sym_key]
             scaler = strategy.symbol_scalers[sym_key]
             feats  = strategy.symbol_features[sym_key]
@@ -336,7 +342,7 @@ class HistoricalMAEBacktest:
             scaler = strategy.scaler
             feats  = strategy.selected_features
         else:
-            logger.warning("  No trained model for %s — skipping", sym_key)
+            logger.warning("  No trained model for %s — skipping", sym_key_tf)
             return []
 
         feats = [f for f in feats if f in df_feat.columns]

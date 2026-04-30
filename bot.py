@@ -903,11 +903,13 @@ class TradingBot:
             sig_label = strat["tf_label"]
             tf_min    = strat["tf_min"]
 
-            # Skip if backtest already saved a model for this slot
+            # Always retrain from accumulated CSV data on startup.
+            # Previously saved models are discarded — ensures the model is
+            # always calibrated to the most recent candle history rather than
+            # silently reusing a potentially stale/mismatched saved model.
             sym_key = self.strategy._sym_key(symbol, sig_label)
             if sym_key in self.strategy.symbol_models:
-                self.log.info("✅ %s [%s] — backtest model loaded, skipping retrain.", name, sig_label)
-                continue
+                del self.strategy.symbol_models[sym_key]
 
             self.log.info("⏳ Training model for %s [%s]…", name, sig_label)
             hist = self.strategy.load_historical_candles(symbol, sig_label)
