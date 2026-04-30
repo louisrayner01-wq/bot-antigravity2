@@ -1681,38 +1681,70 @@ class TradingBot:
                 continue
             price = self.live_price(symbol, df)
 
-            # In paper mode check candle wicks so SL/TP hits aren't missed between monitor cycles.
-            # Only use candles that closed AFTER entry — pre-entry wicks must be ignored.
-            # Scan ALL post-entry candles so a TP/SL wick from any candle in the
-            # window is caught even if price has since retraced.
-            if self.paper and len(df) >= 2:
-                entry_dt = pd.Timestamp(pos.entry_time).tz_convert(None) if pd.Timestamp(pos.entry_time).tzinfo is not None else pd.Timestamp(pos.entry_time)
-                post_entry = df[df["timestamp"] > entry_dt]
-                if not post_entry.empty:
-                    candle_high = float(post_entry["high"].max())
-                    candle_low  = float(post_entry["low"].min())
-                else:
-                    candle_high = 0.0
-                    candle_low  = 0.0
-                # Update excursion with worst wick seen across the full window
-                self.risk.update_excursion(slot_key, price,
-                                           candle_high=candle_high,
-                                           candle_low=candle_low)
-                exit_reason = self.risk.should_exit(slot_key, price,
-                                                    candle_high=candle_high,
-                                                    candle_low=candle_low)
-            else:
-                self.risk.update_excursion(slot_key, price)
-                exit_reason = self.risk.should_exit(slot_key, price)
+            # Always check candle wicks (paper and live) so SL/TP hits aren't missed
+            # between 5-min monitor cycles.  Only use candles closed AFTER entry —
+            # pre-entry wicks must be ignored.
+            entry_dt = (pd.Timestamp(pos.entry_time).tz_convert(None)
+                        if pd.Timestamp(pos.entry_time).tzinfo is not None
+                        else pd.Timestamp(pos.entry_time))
+            post_entry = df[df["timestamp"] > entry_dt] if len(df) >= 2 else pd.DataFrame()
+            candle_high = float(post_entry["high"].max()) if not post_entry.empty else 0.0
+            candle_low  = float(post_entry["low"].min())  if not post_entry.empty else 0.0
+
+            self.risk.update_excursion(slot_key, price,
+                                       candle_high=candle_high, candle_low=candle_low)
+            exit_reason = self.risk.should_exit(slot_key, price,
+                                                candle_high=candle_high, candle_low=candle_low)
+
+            # Exchange reconciliation (live only) ─────────────────────────────
+            # If the software check didn't catch an exit, verify the position
+            # still exists on WEEX.  When the native TPSL order fires on the
+            # exchange the position is closed there but the bot is unaware until
+            # this check.  Price may have bounced before the next poll, so the
+            # wick check above also missed it.
+            exchange_reconciled = False
+            if not self.paper and exit_reason not in ("stop_loss", "take_profit"):
+                try:
+                    exchange_pos = self.client.get_futures_position(symbol)
+                    if exchange_pos is None:
+                        # Exchange already closed the position — infer which level was hit
+                        if pos.side == "long":
+                            if candle_low > 0 and candle_low <= pos.stop_loss:
+                                exit_reason = "stop_loss"
+                            elif candle_high > 0 and candle_high >= pos.take_profit:
+                                exit_reason = "take_profit"
+                            else:
+                                exit_reason = ("stop_loss"
+                                               if abs(price - pos.stop_loss) <= abs(price - pos.take_profit)
+                                               else "take_profit")
+                        else:
+                            if candle_high > 0 and candle_high >= pos.stop_loss:
+                                exit_reason = "stop_loss"
+                            elif candle_low > 0 and candle_low <= pos.take_profit:
+                                exit_reason = "take_profit"
+                            else:
+                                exit_reason = ("stop_loss"
+                                               if abs(price - pos.stop_loss) <= abs(price - pos.take_profit)
+                                               else "take_profit")
+                        exchange_reconciled = True
+                        self.log.warning(
+                            "🔄 Reconciled: %s[%s] TPSL fired on exchange (%s) — re-syncing bot state",
+                            symbol, tf_label, exit_reason)
+                except Exception as exc:
+                    self.log.warning("Exchange position check failed for %s: %s", symbol, exc)
 
             if exit_reason in ("stop_loss", "take_profit"):
-                # In paper mode use the exact SL/TP level as exit price (wick fill)
-                if self.paper:
+                # Paper or reconciled: use exact SL/TP level (exchange filled at that price).
+                # Software-caught live: use current market price.
+                if self.paper or exchange_reconciled:
                     exit_price = pos.stop_loss if exit_reason == "stop_loss" else pos.take_profit
                 else:
                     exit_price = price
                 self.log.info("🚨 %s  %s[%s]  @ £%.4f", exit_reason.upper(), symbol, tf_label, exit_price)
-                self._close_pos(symbol, pos.quantity, exit_price, pos.side)
+                # Only send a close order if the bot is initiating the close —
+                # if the exchange already fired TPSL, the position is gone.
+                if not exchange_reconciled:
+                    self._close_pos(symbol, pos.quantity, exit_price, pos.side)
                 trade = self.risk.close_position(slot_key, exit_price)
                 if trade:
                     trade["slot_key"] = slot_key
