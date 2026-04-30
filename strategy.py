@@ -458,10 +458,11 @@ class TradingStrategy:
         Determine the trend direction from a higher-timeframe DataFrame.
         Returns:  +1 (bullish)  |  -1 (bearish)  |  0 (neutral / mixed)
 
-        Logic:
-          • EMA21 position: is price above or below the 21-period EMA?
-          • MACD histogram: is momentum positive or negative?
-          Both must agree for a strong trend reading; mixed signals = neutral.
+        Logic (mirrors backtest htf_trend exactly):
+          • EMA9 must be on the same side of EMA21 as price — confirms short-term
+            momentum is aligned, not just that price briefly crossed EMA21.
+          • MACD histogram must agree.
+          All three must agree for a directional reading; any disagreement = neutral.
         """
         if higher_tf_df is None or len(higher_tf_df) < 30:
             return 0
@@ -469,29 +470,27 @@ class TradingStrategy:
         df = compute_features(higher_tf_df.copy())
         last = df.iloc[-1]
 
-        ema_bull  = last.get("ema_21", np.nan)
+        ema9      = last.get("ema_9",    np.nan)
+        ema21     = last.get("ema_21",   np.nan)
         macd_diff = last.get("macd_diff", np.nan)
-        close     = last.get("close", np.nan)
+        close     = last.get("close",    np.nan)
 
-        if pd.isna(ema_bull) or pd.isna(close):
+        if pd.isna(ema9) or pd.isna(ema21) or pd.isna(close):
             return 0
 
-        price_above_ema = close > ema_bull
-        price_below_ema = close < ema_bull
+        bullish = ema9 > ema21 and close > ema21
+        bearish = ema9 < ema21 and close < ema21
 
         if not pd.isna(macd_diff):
-            macd_bull = macd_diff > 0
-            macd_bear = macd_diff < 0
-            if price_above_ema and macd_bull:
-                return  1   # strong bullish confluence
-            if price_below_ema and macd_bear:
-                return -1   # strong bearish confluence
-            return 0        # EMA and MACD disagree → neutral
-        else:
-            # No MACD — use EMA alone
-            if price_above_ema:
+            if bullish and macd_diff > 0:
                 return  1
-            if price_below_ema:
+            if bearish and macd_diff < 0:
+                return -1
+            return 0
+        else:
+            if bullish:
+                return  1
+            if bearish:
                 return -1
             return 0
 
