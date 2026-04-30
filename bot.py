@@ -1572,16 +1572,16 @@ class TradingBot:
 
     def _catch_missed_exits(self):
         """
-        Called once on startup. For each restored position that has no wick
-        history yet (seen_high == 0), fetch 200 5m candles (~16 h) and
-        immediately run the exit check so any TP/SL wick that occurred while
-        the bot was down is caught before entering the trading loop.
+        Called once on startup. For every restored position, fetch 200 5m
+        candles (~16 h) and immediately run the exit check so any TP/SL wick
+        that occurred while the bot was down is caught before entering the
+        trading loop.  Always re-checks on startup — the old guard that skipped
+        positions with existing wick history was wrong because SL/TP could have
+        been hit between the last save and this restart.
         """
         if not self.risk.open_positions:
             return
         for slot_key, pos in list(self.risk.open_positions.items()):
-            if pos.seen_high != 0.0 and pos.seen_low != 0.0:
-                continue   # already has wick history from a previous cycle
             symbol   = pos.pair
             tf_label = slot_key.replace(symbol + "_", "") if "_" in slot_key else self._sym_tf_label(symbol)
             # Extract signal TF from slot label (e.g. "5m+4h" → "5")
