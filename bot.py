@@ -55,7 +55,8 @@ from mae_analyser   import MAEAnalyser
 from historical_mae import run_historical_mae
 from news_calendar  import (entries_blocked, stops_should_tighten,
                              next_event, NEWS_TIGHTEN_PCT)
-from telegram_notifier import notify_open, notify_close, notify_model_alert
+from telegram_notifier import notify_open, notify_close, notify_model_alert, notify_daily_summary
+from zoneinfo import ZoneInfo
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2026,6 +2027,7 @@ class TradingBot:
         last_scan_time   = 0.0   # force an entry scan almost immediately
         last_signal_time = 0.0   # force a full tick on startup
         monitor_cycle    = 0     # counts 5-min cycles for periodic reporting
+        last_summary_date = None
 
         while True:
             try:
@@ -2040,6 +2042,12 @@ class TradingBot:
                 # Log data store sizes every hour (12 × 5-min cycles)
                 if monitor_cycle % 12 == 0:
                     self.log_data_sizes()
+
+                # Daily Telegram summary at 02:29 UK time
+                uk_now = datetime.now(ZoneInfo("Europe/London"))
+                if uk_now.hour == 2 and uk_now.minute == 29 and last_summary_date != uk_now.date():
+                    notify_daily_summary(self.logger.trades_file)
+                    last_summary_date = uk_now.date()
 
                 # 2. Full 4h tick — retraining, performance summary, entries
                 if now - last_signal_time >= SIGNAL_INTERVAL:
