@@ -55,7 +55,7 @@ from mae_analyser   import MAEAnalyser
 from historical_mae import run_historical_mae
 from news_calendar  import (entries_blocked, stops_should_tighten,
                              next_event, NEWS_TIGHTEN_PCT)
-from telegram_notifier import notify_open, notify_close, notify_model_alert, notify_daily_summary
+from telegram_notifier import notify_open, notify_close, notify_daily_summary
 from zoneinfo import ZoneInfo
 
 
@@ -1410,14 +1410,6 @@ class TradingBot:
         self._last_monthly_retrain = utcnow()
         self._save_health_state()
         self.log.info("✅ Monthly retrain complete  (backup: %s)", backup_dir if backed_up else "none")
-        notify_model_alert(
-            slot="ALL",
-            alert_type="monthly_retrain",
-            detail=(
-                f"All {len(self.active_strategies)} models retrained on latest rolling data. "
-                f"Previous models backed up → models/backup_{timestamp}"
-            ),
-        )
 
     def _check_model_health(self) -> None:
         """
@@ -1469,7 +1461,6 @@ class TradingBot:
                                    first_seen.replace(tzinfo=None)).days >= drought_days:
                     msg = f"No signal recorded ever (running {drought_days}+ days)"
                     self.log.warning("⚠️  Signal drought  %s — %s", slot, msg)
-                    notify_model_alert(slot, "signal_drought", msg)
                 continue
 
             last_ts = datetime.fromisoformat(last_ts_str).replace(tzinfo=None)
@@ -1477,7 +1468,6 @@ class TradingBot:
             if silent_days >= drought_days:
                 msg = f"No signal for {silent_days} days (last: {last_ts.strftime('%Y-%m-%d')})"
                 self.log.warning("⚠️  Signal drought  %s — %s", slot, msg)
-                notify_model_alert(slot, "signal_drought", msg)
             else:
                 self.log.info("💓 %s  last signal %d day(s) ago", slot, silent_days)
 
@@ -1490,7 +1480,6 @@ class TradingBot:
                        f"vs 90d baseline={baseline_avg:.3f} "
                        f"({recent_avg/baseline_avg*100:.0f}% of baseline)")
                 self.log.warning("📉 Confidence drift  %s — %s", slot, msg)
-                notify_model_alert(slot, "confidence_drift", msg)
             elif baseline_avg > 0:
                 self.log.info("📊 %s  conf: recent=%.3f  baseline=%.3f",
                               slot, recent_avg, baseline_avg)
