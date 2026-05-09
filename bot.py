@@ -2035,6 +2035,7 @@ class TradingBot:
                 # Daily Telegram summary at 02:29 UK time
                 uk_now = datetime.now(ZoneInfo("Europe/London"))
                 if uk_now.hour == 2 and uk_now.minute == 29 and last_summary_date != uk_now.date():
+                    self.log.info("📊 Sending daily Telegram summary (%s UK)", uk_now.strftime("%H:%M"))
                     notify_daily_summary(self.logger.trades_file)
                     last_summary_date = uk_now.date()
 
