@@ -55,7 +55,7 @@ from mae_analyser   import MAEAnalyser
 from historical_mae import run_historical_mae
 from news_calendar  import (entries_blocked, stops_should_tighten,
                              next_event, NEWS_TIGHTEN_PCT)
-from telegram_notifier import notify_open, notify_close, notify_daily_summary
+from telegram_notifier import notify_open, notify_close, notify_daily_summary, notify_startup
 from zoneinfo import ZoneInfo
 
 
@@ -2003,6 +2003,11 @@ class TradingBot:
                       self.cfg["risk"]["initial_capital"])
 
         self.startup()
+        notify_startup(
+            [p["name"] for p in self.pairs],
+            self.cfg["risk"]["initial_capital"],
+            self.paper,
+        )
 
         # Three-speed loop:
         #   Every 5 min  → monitor_exits()   — SL/TP/TP1/LTF reversal check

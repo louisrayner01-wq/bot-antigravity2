@@ -35,6 +35,17 @@ def _send(text: str):
         logger.warning("Telegram error: %s", exc)
 
 
+def notify_startup(pairs: list, equity: float, paper: bool):
+    """Send a ping when the bot (re)starts — confirms Telegram is wired up."""
+    mode = "📄 PAPER" if paper else "🔴 LIVE"
+    text = (
+        f"<b>🚀 M1 Fortuna Bot Started  [{mode}]</b>\n"
+        f"Pairs  : {', '.join(pairs)}\n"
+        f"Equity : £{equity:.2f}"
+    )
+    _send(text)
+
+
 def notify_open(symbol: str, side: str, timeframe_label: str,
                 entry: float, sl: float, tp: float,
                 risk_amount: float, equity: float):
