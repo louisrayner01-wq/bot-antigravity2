@@ -55,7 +55,8 @@ from mae_analyser   import MAEAnalyser
 from historical_mae import run_historical_mae
 from news_calendar  import (entries_blocked, stops_should_tighten,
                              next_event, NEWS_TIGHTEN_PCT)
-from telegram_notifier import notify_open, notify_close, notify_daily_summary, notify_startup
+from telegram_notifier import notify_open, notify_close, notify_startup
+from daily_summary import send_if_due as send_daily_summary
 from zoneinfo import ZoneInfo
 
 
@@ -2040,8 +2041,10 @@ class TradingBot:
                 uk_now = datetime.now(ZoneInfo("Europe/London"))
                 if uk_now.hour == 2 and uk_now.minute == 29 and last_summary_date != uk_now.date():
                     self.log.info("📊 Sending daily Telegram summary (%s UK)", uk_now.strftime("%H:%M"))
-                    m2_csv = self.cfg["logging"].get("m2_trades_file", "")
-                    notify_daily_summary(self.logger.trades_file, m2_csv)
+                    send_daily_summary(
+                        m1_csv=self.logger.trades_file,
+                        m2_csv=self.cfg["logging"].get("m2_trades_file", ""),
+                    )
                     last_summary_date = uk_now.date()
 
                 # 2. Full 4h tick — retraining, performance summary, entries

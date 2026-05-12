@@ -7,10 +7,9 @@ Environment variables (set in Railway):
   TELEGRAM_ENABLED — "true" / "false"  (default: true)
 """
 
-import csv
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -82,67 +81,6 @@ def notify_close(symbol: str, side: str, timeframe_label: str,
     )
     _send(text)
 
-
-def notify_daily_summary(m1_csv: str, m2_csv: str = ""):
-    """
-    Combined daily summary covering both M1 and M2 trades in the last 24 h.
-    Called once at 02:29 UK time from M1's main loop.
-    m2_csv may be empty or missing — gracefully handled.
-    """
-    cutoff  = datetime.now(timezone.utc) - timedelta(hours=24)
-    now_str = datetime.now(timezone.utc).strftime("%d %b %Y")
-    trades  = []
-
-    for csv_path, asset_field in [(m1_csv, "pair"), (m2_csv, "asset")]:
-        if not csv_path or not os.path.exists(csv_path):
-            continue
-        try:
-            with open(csv_path, newline="") as f:
-                for row in csv.DictReader(f):
-                    try:
-                        ts = datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00"))
-                        if ts.tzinfo is None:
-                            ts = ts.replace(tzinfo=timezone.utc)
-                        if ts >= cutoff:
-                            trades.append({
-                                "asset": _asset_name(row.get(asset_field, "")),
-                                "side":  row.get("side", "").upper(),
-                                "pnl":   float(row.get("pnl_usdt", 0)),
-                            })
-                    except Exception:
-                        pass
-        except Exception as exc:
-            logger.warning("Daily summary: could not read %s: %s", csv_path, exc)
-
-    if not trades:
-        _send(
-            f"<b>📊 Daily Summary — {now_str}</b>\n\n"
-            f"No trades closed in the last 24 hours."
-        )
-        return
-
-    total     = len(trades)
-    wins      = sum(1 for t in trades if t["pnl"] > 0)
-    total_pnl = sum(t["pnl"] for t in trades)
-    wr        = wins / total * 100
-
-    lines = []
-    for t in trades:
-        em   = "✅" if t["pnl"] > 0 else "❌"
-        sign = "+" if t["pnl"] >= 0 else ""
-        lines.append(f"  {em} {t['asset']} {t['side']}  {sign}£{t['pnl']:.2f}")
-
-    pnl_emoji = "📈" if total_pnl >= 0 else "📉"
-    pnl_str   = f"+£{total_pnl:.2f}" if total_pnl >= 0 else f"-£{abs(total_pnl):.2f}"
-
-    text = (
-        f"<b>{pnl_emoji} Daily Summary — {now_str}</b>\n\n"
-        f"Trades   : <b>{total}</b>  ({wins}W / {total - wins}L)\n"
-        f"Win rate : <b>{wr:.0f}%</b>\n"
-        f"P&L      : <b>{pnl_str}</b>\n\n"
-        + "\n".join(lines)
-    )
-    _send(text)
 
 
 def notify_model_alert(slot: str, alert_type: str, detail: str):
