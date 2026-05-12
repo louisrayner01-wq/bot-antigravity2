@@ -247,4 +247,4 @@ data:
   # Revisit this cap after the bot has 50+ live trades and we can measure whether
   # a wider TF range produces better live performance.
   min_signal_tf_minutes: 5     # 5m enabled — 5m+4h strategies confirmed profitable in backtest
-  max_signal_tf_minutes: 1440  # No cap — let analysis pick the best TF per symbol across 15m/1h/4h/1d
+  max_signal_tf_minutes: 240   # Cap at 4h — 1d was picked on Apr 19 and killed signal frequency
