@@ -209,6 +209,7 @@ logging:
   trades_file: "/data/trades.csv"
   models_dir:  "/data/models/"
   level:       "INFO"
+  m2_trades_file: "/Users/Louis/bot-fvg/data/trades_m2.csv"
 
 # ── Data collection + analysis ──────────────────────────────────────────────
 data:

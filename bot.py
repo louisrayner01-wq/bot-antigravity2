@@ -2006,7 +2006,6 @@ class TradingBot:
         notify_startup(
             [p["name"] for p in self.pairs],
             self.cfg["risk"]["initial_capital"],
-            self.paper,
         )
 
         # Three-speed loop:
@@ -2041,7 +2040,8 @@ class TradingBot:
                 uk_now = datetime.now(ZoneInfo("Europe/London"))
                 if uk_now.hour == 2 and uk_now.minute == 29 and last_summary_date != uk_now.date():
                     self.log.info("📊 Sending daily Telegram summary (%s UK)", uk_now.strftime("%H:%M"))
-                    notify_daily_summary(self.logger.trades_file)
+                    m2_csv = self.cfg["logging"].get("m2_trades_file", "")
+                    notify_daily_summary(self.logger.trades_file, m2_csv)
                     last_summary_date = uk_now.date()
 
                 # 2. Full 4h tick — retraining, performance summary, entries

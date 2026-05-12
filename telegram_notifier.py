@@ -1,5 +1,5 @@
 """
-telegram_notifier.py — Trade alert notifications via Telegram Bot API.
+telegram_notifier.py — Fortuna trade alerts via Telegram Bot API.
 
 Environment variables (set in Railway):
   TELEGRAM_TOKEN   — bot token from @BotFather
@@ -7,10 +7,10 @@ Environment variables (set in Railway):
   TELEGRAM_ENABLED — "true" / "false"  (default: true)
 """
 
-import os
 import csv
 import logging
-from datetime import datetime, timezone, timedelta
+import os
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +35,15 @@ def _send(text: str):
         logger.warning("Telegram error: %s", exc)
 
 
-def notify_startup(pairs: list, equity: float, paper: bool):
-    """Send a ping when the bot (re)starts — confirms Telegram is wired up."""
-    mode = "📄 PAPER" if paper else "🔴 LIVE"
+def _asset_name(raw: str) -> str:
+    """Strip exchange suffixes: BTCUSDT_UMCBL → BTC, BTCUSDT → BTC."""
+    return raw.replace("USDT_UMCBL", "").replace("USDT_SPBL", "").replace("USDT", "")
+
+
+def notify_startup(pairs: list, equity: float):
+    """Ping on (re)start — confirms Telegram env vars are set."""
     text = (
-        f"<b>🚀 M1 Fortuna Bot Started  [{mode}]</b>\n"
+        f"<b>🚀 Fortuna Bot Started</b>\n"
         f"Pairs  : {', '.join(pairs)}\n"
         f"Equity : £{equity:.2f}"
     )
@@ -49,17 +53,14 @@ def notify_startup(pairs: list, equity: float, paper: bool):
 def notify_open(symbol: str, side: str, timeframe_label: str,
                 entry: float, sl: float, tp: float,
                 risk_amount: float, equity: float):
-    """Send alert when a trade is opened."""
-    pct_risked = (risk_amount / equity * 100) if equity > 0 else 0.0
-    side_str   = "LONG" if side == "long" else "SHORT"
-    name       = symbol.replace("USDT_UMCBL", "")
-
+    side_str = "LONG" if side == "long" else "SHORT"
+    emoji    = "🟢" if side == "long" else "🔴"
+    name     = _asset_name(symbol)
     text = (
-        f"<b>{'🟢' if side == 'long' else '🔴'} {side_str}  {name}  [{timeframe_label}]</b>\n"
-        f"Entry  : <b>${entry:,.4f}</b>\n"
-        f"SL     : ${sl:,.4f}\n"
-        f"TP     : ${tp:,.4f}\n"
-        f"Risked : {pct_risked:.2f}% of account"
+        f"<b>{emoji} {side_str} — {name}</b>\n"
+        f"Entry : <b>${entry:,.4f}</b>\n"
+        f"SL    : ${sl:,.4f}\n"
+        f"TP    : ${tp:,.4f}"
     )
     _send(text)
 
@@ -67,162 +68,90 @@ def notify_open(symbol: str, side: str, timeframe_label: str,
 def notify_close(symbol: str, side: str, timeframe_label: str,
                  entry: float, exit_price: float,
                  pnl_usdt: float, equity: float, reason: str):
-    """Send alert when a trade is closed."""
-    pct_account = (pnl_usdt / equity * 100) if equity > 0 else 0.0
-    won         = pnl_usdt >= 0
-    emoji       = "✅" if won else "❌"
-    name        = symbol.replace("USDT_UMCBL", "")
-    reason_str  = reason.replace("_", " ").title()
-
+    won       = pnl_usdt >= 0
+    emoji     = "✅" if won else "❌"
+    label     = "Take Profit" if "take_profit" in reason else "Stop Loss"
+    side_str  = "LONG" if side == "long" else "SHORT"
+    name      = _asset_name(symbol)
+    sign      = "+" if pnl_usdt >= 0 else ""
     text = (
-        f"<b>{emoji} CLOSED  {name}  [{timeframe_label}]  ({reason_str})</b>\n"
-        f"Entry  : ${entry:,.4f}\n"
-        f"Exit   : ${exit_price:,.4f}\n"
-        f"P&L    : <b>{pct_account:+.2f}% of account</b>"
+        f"<b>{emoji} {label} — {name}  {side_str}</b>\n"
+        f"Entry : ${entry:,.4f}\n"
+        f"Exit  : ${exit_price:,.4f}\n"
+        f"P&L   : <b>{sign}£{pnl_usdt:.2f}</b>"
     )
     _send(text)
 
 
-def notify_daily_summary(trades_csv: str):
+def notify_daily_summary(m1_csv: str, m2_csv: str = ""):
     """
-    Send a 24-hour trading summary to Telegram.
-    Reads the trades CSV for the past 24 hours.
-    If no trades were taken, reads the skipped-signals CSV to explain why.
-    Called once per day at 02:29 UK time from the main loop.
+    Combined daily summary covering both M1 and M2 trades in the last 24 h.
+    Called once at 02:29 UK time from M1's main loop.
+    m2_csv may be empty or missing — gracefully handled.
     """
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    cutoff  = datetime.now(timezone.utc) - timedelta(hours=24)
+    now_str = datetime.now(timezone.utc).strftime("%d %b %Y")
+    trades  = []
 
-    # ── Read completed trades from the last 24 h ──────────────────────────────
-    trades = []
-    if os.path.exists(trades_csv):
+    for csv_path, asset_field in [(m1_csv, "pair"), (m2_csv, "asset")]:
+        if not csv_path or not os.path.exists(csv_path):
+            continue
         try:
-            with open(trades_csv, newline="") as f:
+            with open(csv_path, newline="") as f:
                 for row in csv.DictReader(f):
                     try:
                         ts = datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00"))
                         if ts.tzinfo is None:
                             ts = ts.replace(tzinfo=timezone.utc)
                         if ts >= cutoff:
-                            trades.append(row)
+                            trades.append({
+                                "asset": _asset_name(row.get(asset_field, "")),
+                                "side":  row.get("side", "").upper(),
+                                "pnl":   float(row.get("pnl_usdt", 0)),
+                            })
                     except Exception:
                         pass
         except Exception as exc:
-            logger.warning("Daily summary: could not read trades CSV: %s", exc)
+            logger.warning("Daily summary: could not read %s: %s", csv_path, exc)
 
-    now_str = datetime.now(timezone.utc).strftime("%d %b %Y")
-
-    # ── No trades taken ───────────────────────────────────────────────────────
     if not trades:
-        reason = _no_trade_reason(trades_csv, cutoff)
-        text = (
+        _send(
             f"<b>📊 Daily Summary — {now_str}</b>\n\n"
-            f"No trades taken in the last 24 hours.\n\n"
-            f"<i>{reason}</i>"
+            f"No trades closed in the last 24 hours."
         )
-        _send(text)
         return
 
-    # ── Build stats ───────────────────────────────────────────────────────────
-    total    = len(trades)
-    wins     = [t for t in trades if float(t.get("pnl_usdt", 0)) > 0]
-    losses   = [t for t in trades if float(t.get("pnl_usdt", 0)) <= 0]
-    total_pnl = sum(float(t.get("pnl_usdt", 0)) for t in trades)
-    win_rate  = len(wins) / total * 100 if total else 0
+    total     = len(trades)
+    wins      = sum(1 for t in trades if t["pnl"] > 0)
+    total_pnl = sum(t["pnl"] for t in trades)
+    wr        = wins / total * 100
 
-    best  = max(trades, key=lambda t: float(t.get("pnl_usdt", 0)))
-    worst = min(trades, key=lambda t: float(t.get("pnl_usdt", 0)))
-
-    pnl_emoji  = "📈" if total_pnl >= 0 else "📉"
-    result_str = f"+£{total_pnl:.2f}" if total_pnl >= 0 else f"-£{abs(total_pnl):.2f}"
-
-    # ── Per-trade breakdown ───────────────────────────────────────────────────
     lines = []
     for t in trades:
-        pnl   = float(t.get("pnl_usdt", 0))
-        emoji = "✅" if pnl > 0 else "❌"
-        pair  = t.get("pair", "").replace("USDT_UMCBL", "")
-        side  = t.get("side", "").upper()
-        sign  = "+" if pnl >= 0 else ""
-        lines.append(f"  {emoji} {pair} {side}  {sign}£{pnl:.2f}")
+        em   = "✅" if t["pnl"] > 0 else "❌"
+        sign = "+" if t["pnl"] >= 0 else ""
+        lines.append(f"  {em} {t['asset']} {t['side']}  {sign}£{t['pnl']:.2f}")
 
-    trades_block = "\n".join(lines)
+    pnl_emoji = "📈" if total_pnl >= 0 else "📉"
+    pnl_str   = f"+£{total_pnl:.2f}" if total_pnl >= 0 else f"-£{abs(total_pnl):.2f}"
 
     text = (
         f"<b>{pnl_emoji} Daily Summary — {now_str}</b>\n\n"
-        f"Trades  : <b>{total}</b>  ({len(wins)}W / {len(losses)}L)\n"
-        f"Win rate: <b>{win_rate:.0f}%</b>\n"
-        f"P&L     : <b>{result_str}</b>\n\n"
-        f"<b>Breakdown:</b>\n{trades_block}\n\n"
-        f"Best  : {best.get('pair','').replace('USDT_UMCBL','')} "
-        f"+£{float(best.get('pnl_usdt',0)):.2f}\n"
-        f"Worst : {worst.get('pair','').replace('USDT_UMCBL','')} "
-        f"£{float(worst.get('pnl_usdt',0)):.2f}"
+        f"Trades   : <b>{total}</b>  ({wins}W / {total - wins}L)\n"
+        f"Win rate : <b>{wr:.0f}%</b>\n"
+        f"P&L      : <b>{pnl_str}</b>\n\n"
+        + "\n".join(lines)
     )
     _send(text)
 
 
-def _no_trade_reason(trades_csv: str, cutoff: datetime) -> str:
-    """Inspect skipped-signals CSV to explain why no trades were taken."""
-    skipped_csv = trades_csv.replace(".csv", "_skipped.csv")
-    if not os.path.exists(skipped_csv):
-        return "Market conditions did not produce any qualifying signals."
-
-    skipped = []
-    try:
-        with open(skipped_csv, newline="") as f:
-            for row in csv.DictReader(f):
-                try:
-                    ts = datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00"))
-                    if ts.tzinfo is None:
-                        ts = ts.replace(tzinfo=timezone.utc)
-                    if ts >= cutoff:
-                        skipped.append(row)
-                except Exception:
-                    pass
-    except Exception:
-        pass
-
-    if not skipped:
-        return "Market in consolidation — no signals fired across any pairs."
-
-    # Check most common skip reason
-    reasons = [r.get("skip_reason", "") for r in skipped]
-    if any("position" in r.lower() for r in reasons):
-        return (
-            f"{len(skipped)} signal(s) fired but were skipped — "
-            "an existing position was already open."
-        )
-
-    # Low confidence signals fired but didn't pass threshold
-    confidences = []
-    for r in skipped:
-        try:
-            confidences.append(float(r.get("confidence", 0)))
-        except Exception:
-            pass
-    if confidences:
-        avg_conf = sum(confidences) / len(confidences)
-        return (
-            f"{len(skipped)} signal(s) fired but confidence was too low "
-            f"(avg {avg_conf:.0%}) — market likely in consolidation."
-        )
-
-    return f"{len(skipped)} signal(s) fired but did not meet entry criteria."
-
-
 def notify_model_alert(slot: str, alert_type: str, detail: str):
-    """
-    Send a model health alert. Called for:
-      • signal_drought  — slot has been silent for too long
-      • confidence_drift — model confidence collapsing vs baseline
-      • monthly_retrain  — scheduled retrain completed
-    """
     icons = {
         "signal_drought":   "⚠️",
         "confidence_drift": "📉",
         "monthly_retrain":  "🔄",
     }
-    icon = icons.get(alert_type, "ℹ️")
+    icon  = icons.get(alert_type, "ℹ️")
     label = alert_type.replace("_", " ").title()
     text = (
         f"<b>{icon} MODEL HEALTH  {label}</b>\n"
