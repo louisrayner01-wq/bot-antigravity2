@@ -273,10 +273,14 @@ def build_model() -> CalibratedClassifierCV:
     RF + GradientBoosting + ExtraTrees, soft-vote, wrapped in calibration.
     This ensures live model confidence scores are directly comparable to
     the 0.55 threshold proven in backtesting.
+
+    class_weight="balanced" is required on RF and ET: with ~67% HOLD labels
+    (33% directional by design) the unweighted ensemble defaults to predicting
+    HOLD everywhere, collapsing buy_p/sell_p to ≈9%.
     """
     rf = RandomForestClassifier(
         n_estimators=100, max_depth=8,
-        min_samples_leaf=10, random_state=42, n_jobs=1,
+        min_samples_leaf=10, class_weight="balanced", random_state=42, n_jobs=1,
     )
     gb = GradientBoostingClassifier(
         n_estimators=80, max_depth=4,
@@ -284,7 +288,7 @@ def build_model() -> CalibratedClassifierCV:
     )
     et = ExtraTreesClassifier(
         n_estimators=100, max_depth=8,
-        min_samples_leaf=10, random_state=42, n_jobs=1,
+        min_samples_leaf=10, class_weight="balanced", random_state=42, n_jobs=1,
     )
     voter = VotingClassifier(
         estimators=[("rf", rf), ("gb", gb), ("et", et)], voting="soft"
@@ -644,6 +648,16 @@ class TradingStrategy:
 
         valid = X_raw.notna().all(axis=1) & y.notna()
         X_raw, y = X_raw[valid].iloc[:-self.label_horizon], y[valid].iloc[:-self.label_horizon]
+
+        total_y = len(y)
+        buys  = int((y == BUY).sum())
+        sells = int((y == SELL).sum())
+        holds = int((y == HOLD).sum())
+        logger.info("📊 Label dist [%s %s]: BUY=%d (%.0f%%) SELL=%d (%.0f%%) HOLD=%d (%.0f%%)",
+                    symbol or "?", timeframe_label,
+                    buys,  buys  / total_y * 100,
+                    sells, sells / total_y * 100,
+                    holds, holds / total_y * 100)
 
         if len(X_raw) < self.min_samples:
             logger.info("⏳ Need %d samples to train (have %d). Skipping.",

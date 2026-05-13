@@ -114,11 +114,13 @@ def load_config(path: str = "config.yaml") -> dict:
 
 def build_model() -> CalibratedClassifierCV:
     rf  = RandomForestClassifier(n_estimators=100, max_depth=8,
-                                  min_samples_leaf=10, random_state=42, n_jobs=-1)
+                                  min_samples_leaf=10, class_weight="balanced",
+                                  random_state=42, n_jobs=-1)
     gb  = GradientBoostingClassifier(n_estimators=80, max_depth=4,
                                       learning_rate=0.05, random_state=42)
     et  = ExtraTreesClassifier(n_estimators=100, max_depth=8,
-                                min_samples_leaf=10, random_state=42, n_jobs=-1)
+                                min_samples_leaf=10, class_weight="balanced",
+                                random_state=42, n_jobs=-1)
     voter = VotingClassifier(
         estimators=[("rf", rf), ("gb", gb), ("et", et)], voting="soft"
     )
