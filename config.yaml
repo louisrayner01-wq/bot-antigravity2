@@ -222,7 +222,7 @@ data:
   confluence_timeframe: "60"    # 1h filter applied on top of 15m signals
 
   # Analysis results older than this many days trigger a fresh analysis run
-  analysis_stale_days:  9999  # strategies hardcoded via fixed_strategies — skip re-analysis on restart
+  analysis_stale_days:  1     # force fresh analysis — April 19 thresholds stale after crash/recovery
 
   # ── Model health settings ──────────────────────────────────────────────────
   # retrain_interval_days: force a full model retrain this often (rolling window).
