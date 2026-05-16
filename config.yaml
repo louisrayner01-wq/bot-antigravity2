@@ -80,10 +80,12 @@ risk:
 
 strategy:
   # ── Signal thresholds ──────────────────────────────────────────────────────
-  # Early-stage values — model has limited data so probabilities cluster near 0.33.
-  # Raise buy_threshold toward 0.55–0.60 once the bot has 50+ completed trades.
-  buy_threshold:    0.55   # Matches the backtest min_confidence threshold exactly
-  sell_threshold:   0.55   # Matches the backtest min_confidence threshold exactly
+  # Lowered from 0.55: CalibratedClassifierCV on a 2-year rolling window compresses
+  # probabilities to ~0.10 baseline (vs 0.55 in backtest walk-forward windows).
+  # The 4h HTF confluence filter provides the main edge — ML threshold is a sanity
+  # check only. EV gate will cut slots where 0.38 signals don't produce positive EV.
+  buy_threshold:    0.38
+  sell_threshold:   0.38
 
   # ── Trade quality gates (BOTH must pass before entering a trade) ───────────
   min_ev:           0.001  # Minimum Expected Value (EV > 0.1 % per trade)
@@ -164,7 +166,7 @@ strategy:
 
   # Per-slot confidence threshold overrides (default is buy/sell_threshold above)
   slot_conf_threshold:
-    "XRPUSDT_UMCBL_5m+4h": 0.60   # XRP needs higher gate — validated in 3yr backtest
+    "XRPUSDT_UMCBL_5m+4h": 0.42   # reduced from 0.60 alongside global threshold drop
 
   # ── Monthly withdrawal rule ────────────────────────────────────────────────
   # At end of each month: withdraw 50% of net profit above starting capital floor.
