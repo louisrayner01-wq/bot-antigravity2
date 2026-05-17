@@ -53,7 +53,6 @@ from sklearn.ensemble import (RandomForestClassifier,
                                GradientBoostingClassifier,
                                ExtraTreesClassifier,
                                VotingClassifier)
-from sklearn.calibration import CalibratedClassifierCV
 from sklearn.preprocessing import StandardScaler
 
 from indicators import compute_features, FEATURE_COLS
@@ -112,7 +111,7 @@ def load_config(path: str = "config.yaml") -> dict:
 
 # ── Model ─────────────────────────────────────────────────────────────────────
 
-def build_model() -> CalibratedClassifierCV:
+def build_model() -> VotingClassifier:
     rf  = RandomForestClassifier(n_estimators=100, max_depth=8,
                                   min_samples_leaf=10, class_weight="balanced",
                                   random_state=42, n_jobs=-1)
@@ -121,10 +120,9 @@ def build_model() -> CalibratedClassifierCV:
     et  = ExtraTreesClassifier(n_estimators=100, max_depth=8,
                                 min_samples_leaf=10, class_weight="balanced",
                                 random_state=42, n_jobs=-1)
-    voter = VotingClassifier(
+    return VotingClassifier(
         estimators=[("rf", rf), ("gb", gb), ("et", et)], voting="soft"
     )
-    return CalibratedClassifierCV(voter, cv=3)
 
 
 # ── HTF trend aligned to entry timestamps ─────────────────────────────────────

@@ -7,8 +7,10 @@ Architecture
      • Random Forest       — robust, handles non-linear patterns well
      • Gradient Boosting   — corrects errors iteratively, strong on tabular data
      • Extra-Trees         — adds randomness, reduces overfitting
-   Wrapped in CalibratedClassifierCV so the probabilities it emits are
-   ACTUALLY reliable percentages (not just relative scores).
+   Raw soft-vote probabilities used directly (no CalibratedClassifierCV):
+   calibration compressed signals below class prior (~0.07) making them
+   unusable. Raw balanced-tree votes sit near 0.33 when uncertain and
+   push toward 0.45-0.55 on genuine signals — workable with a 0.38 gate.
 
 2. Expected Value gate
    Before every trade we calculate:
@@ -36,7 +38,6 @@ from sklearn.ensemble import (RandomForestClassifier,
                                GradientBoostingClassifier,
                                ExtraTreesClassifier,
                                VotingClassifier)
-from sklearn.calibration import CalibratedClassifierCV
 from sklearn.model_selection import cross_val_score
 from sklearn.preprocessing import StandardScaler
 
@@ -267,16 +268,18 @@ def retrain_frequency(total_trades: int, stages: List[Dict]) -> int:
 # Ensemble model builder
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_model() -> CalibratedClassifierCV:
+def build_model() -> VotingClassifier:
     """
-    Identical ensemble to the walk-forward backtest (backtest.py):
-    RF + GradientBoosting + ExtraTrees, soft-vote, wrapped in calibration.
-    This ensures live model confidence scores are directly comparable to
-    the 0.55 threshold proven in backtesting.
+    RF + GradientBoosting + ExtraTrees, soft-vote ensemble.
 
-    class_weight="balanced" is required on RF and ET: with ~67% HOLD labels
-    (33% directional by design) the unweighted ensemble defaults to predicting
-    HOLD everywhere, collapsing buy_p/sell_p to ≈9%.
+    CalibratedClassifierCV removed: it compressed probabilities toward the
+    class prior (~0.07 for BUY with 16% label frequency), making signals
+    impossible to detect. Raw soft-vote probabilities from balanced trees
+    output ~0.33 when uncertain and push toward 0.45-0.55 on genuine signals,
+    which works well with the 0.38 threshold + HTF confluence gate.
+
+    class_weight="balanced" on RF and ET ensures the ensemble doesn't
+    collapse to predicting HOLD on all 68% HOLD-majority training data.
     """
     rf = RandomForestClassifier(
         n_estimators=100, max_depth=8,
@@ -290,10 +293,9 @@ def build_model() -> CalibratedClassifierCV:
         n_estimators=100, max_depth=8,
         min_samples_leaf=10, class_weight="balanced", random_state=42, n_jobs=1,
     )
-    voter = VotingClassifier(
+    return VotingClassifier(
         estimators=[("rf", rf), ("gb", gb), ("et", et)], voting="soft"
     )
-    return CalibratedClassifierCV(voter, cv=3)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -319,13 +321,13 @@ class TradingStrategy:
         os.makedirs(self.models_dir, exist_ok=True)
 
         # Default model (primary pair / backward-compat fallback)
-        self.model: Optional[CalibratedClassifierCV] = None
+        self.model: Optional[VotingClassifier] = None
         self.scaler = StandardScaler()
         self.selected_features: List[str] = list(FEATURE_COLS)
 
         # Per-strategy models — keyed by "{SYMBOL}_{TF}" e.g. "BTCUSDT_4h"
         # Allows multiple (symbol, timeframe) strategies to run simultaneously.
-        self.symbol_models:   Dict[str, CalibratedClassifierCV] = {}
+        self.symbol_models:   Dict[str, VotingClassifier] = {}
         self.symbol_scalers:  Dict[str, StandardScaler]         = {}
         self.symbol_features: Dict[str, List[str]]              = {}
 
