@@ -180,8 +180,8 @@ strategy:
   # On Thursdays, accept signals with lower model confidence (0.50 vs 0.55)
   # but require a stricter R/R (2.0 vs 1.5) to compensate.
   # Backtest shows Thu WR is 53-83% across all strategies — structural edge.
-  thursday_buy_threshold:  0.50
-  thursday_sell_threshold: 0.50
+  thursday_buy_threshold:  0.35   # more permissive than 0.38 general — Thu WR 53-83%
+  thursday_sell_threshold: 0.35
   thursday_min_rr:         1.5
 
   # ── Hold / exit rules ──────────────────────────────────────────────────────
