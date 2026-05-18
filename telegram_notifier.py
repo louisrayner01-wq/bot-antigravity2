@@ -83,6 +83,49 @@ def notify_close(symbol: str, side: str, timeframe_label: str,
 
 
 
+def notify_heartbeat(equity: float, tick: int,
+                     open_positions: dict,
+                     confidences: dict,
+                     threshold: float):
+    """
+    4-hourly status ping so the user can see the bot is alive
+    even during signal droughts.
+
+    confidences: {slot_key: (buy_p, sell_p, htf_direction)}
+    """
+    now_str = datetime.now(timezone.utc).strftime("%d %b %Y %H:%M UTC")
+
+    pos_lines = []
+    for slot, pos in open_positions.items():
+        side  = pos.get("side", "?").upper()
+        entry = pos.get("entry_price", 0)
+        name  = _asset_name(slot.split("_")[0] + "USDT")
+        pos_lines.append(f"  {'🟢' if side=='LONG' else '🔴'} {side} {name}  @ ${entry:,.2f}")
+
+    pos_block = "\n".join(pos_lines) if pos_lines else "  none"
+
+    conf_lines = []
+    for slot, (buy_p, sell_p, htf) in sorted(confidences.items()):
+        name   = _asset_name(slot)
+        htf_s  = "▲" if htf > 0 else ("▼" if htf < 0 else "–")
+        peak   = max(buy_p, sell_p)
+        dir_s  = "B" if buy_p >= sell_p else "S"
+        bar    = "█" * int(peak * 10) + "░" * (10 - int(peak * 10))
+        flag   = " ← close!" if peak >= threshold * 0.90 else ""
+        conf_lines.append(f"  {name:<6} {dir_s} {bar} {peak:.2f}  HTF{htf_s}{flag}")
+
+    conf_block = "\n".join(conf_lines) if conf_lines else "  no data"
+
+    text = (
+        f"<b>📡 Fortuna Status — {now_str}</b>\n"
+        f"Equity   : <b>£{equity:.2f}</b>  (tick #{tick})\n\n"
+        f"<b>Positions</b>\n{pos_block}\n\n"
+        f"<b>Confidence</b>  (thresh {threshold:.2f})\n"
+        f"<code>{conf_block}</code>"
+    )
+    _send(text)
+
+
 def notify_model_alert(slot: str, alert_type: str, detail: str):
     icons = {
         "signal_drought":   "⚠️",

@@ -55,7 +55,7 @@ from mae_analyser   import MAEAnalyser
 from historical_mae import run_historical_mae
 from news_calendar  import (entries_blocked, stops_should_tighten,
                              next_event, NEWS_TIGHTEN_PCT)
-from telegram_notifier import notify_open, notify_close, notify_startup
+from telegram_notifier import notify_open, notify_close, notify_startup, notify_heartbeat
 from daily_summary import send_if_due as send_daily_summary
 from zoneinfo import ZoneInfo
 
@@ -289,6 +289,8 @@ class TradingBot:
         # last_signal_ts: slot → datetime of last prediction with confidence
         #   >= ConfidenceTracker.MIN_SIGNAL_CONFIDENCE (not just opened trades)
         self._last_signal_ts:       Dict[str, datetime] = {}
+        # slot_key → (buy_p, sell_p, htf_direction) from the most recent prediction
+        self._last_confidences:     Dict[str, tuple]    = {}
         # When the bot last ran a full forced retrain of all models
         self._last_monthly_retrain: Optional[datetime]  = None
         self._health_path = os.path.join(
@@ -1178,6 +1180,7 @@ class TradingBot:
             )
 
         confidence = buy_p if signal == BUY else sell_p if signal == SELL else max(buy_p, sell_p)
+        self._last_confidences[slot_key] = (buy_p, sell_p, htf_direction)
 
         if signal == HOLD:
             self.log.info("  %s  → HOLD  (buy_p=%.2f  sell_p=%.2f  htf=%+d)",
@@ -1866,6 +1869,7 @@ class TradingBot:
             self.strategy.conf_tracker.record(slot_key, raw_confidence)
             if raw_confidence >= self.strategy.conf_tracker.MIN_SIGNAL_CONFIDENCE:
                 self._last_signal_ts[slot_key] = utcnow()
+            self._last_confidences[slot_key] = (buy_p, sell_p, htf_direction)
 
             if signal == 0:
                 results.append(f"{name}[{tf_label}]→HOLD(b{buy_p:.2f}/s{sell_p:.2f})")
@@ -1988,6 +1992,20 @@ class TradingBot:
             push_reports(self.data_dir)
         except Exception as exc:
             self.log.debug("push_reports error (non-fatal): %s", exc)
+
+        # 4-hourly Telegram heartbeat — confirms bot is alive even during droughts
+        try:
+            notify_heartbeat(
+                equity         = equity,
+                tick           = self._tick_count,
+                open_positions = {k: {"side": v.side, "entry_price": v.entry_price}
+                                  for k, v in self.risk.open_positions.items()
+                                  if hasattr(v, "side")},
+                confidences    = self._last_confidences,
+                threshold      = self.strategy.buy_threshold,
+            )
+        except Exception as exc:
+            self.log.debug("Telegram heartbeat error (non-fatal): %s", exc)
 
         self._tick_count += 1
 
