@@ -59,6 +59,7 @@ def _read_trades(csv_path: str, asset_field: str) -> list:
                             "asset": _asset_name(row.get(asset_field, "")),
                             "side":  row.get("side", "").upper(),
                             "pnl":   float(row.get("pnl_usdt", 0)),
+                            "rr":    float(row.get("rr", 0) or 0),
                         })
                 except Exception:
                     pass
@@ -109,22 +110,26 @@ def send_if_due(m1_csv: str = M1_CSV, m2_csv: str = M2_CSV) -> bool:
 
     total     = len(trades)
     wins      = sum(1 for t in trades if t["pnl"] > 0)
+    losses    = total - wins
     total_pnl = sum(t["pnl"] for t in trades)
     wr        = wins / total * 100
+    avg_rr    = sum(t["rr"] for t in trades) / total if total else 0
 
     lines = []
     for t in trades:
         em   = "✅" if t["pnl"] > 0 else "❌"
         sign = "+" if t["pnl"] >= 0 else ""
-        lines.append(f"  {em} {t['asset']} {t['side']}  {sign}£{t['pnl']:.2f}")
+        rr_s = f"  RR {t['rr']:+.2f}R" if t["rr"] != 0 else ""
+        lines.append(f"  {em} {t['asset']} {t['side']}  {sign}£{t['pnl']:.2f}{rr_s}")
 
     pnl_emoji = "📈" if total_pnl >= 0 else "📉"
     pnl_str   = f"+£{total_pnl:.2f}" if total_pnl >= 0 else f"-£{abs(total_pnl):.2f}"
 
     _send(
         f"<b>{pnl_emoji} Daily Summary — {now_str}</b>\n\n"
-        f"Trades   : <b>{total}</b>  ({wins}W / {total - wins}L)\n"
+        f"Trades   : <b>{total}</b>  ({wins}W / {losses}L)\n"
         f"Win rate : <b>{wr:.0f}%</b>\n"
+        f"Avg RR   : <b>{avg_rr:+.2f}R</b>\n"
         f"P&L      : <b>{pnl_str}</b>\n\n"
         + "\n".join(lines)
     )

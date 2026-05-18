@@ -9,7 +9,6 @@ Environment variables (set in Railway):
 
 import logging
 import os
-from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -35,95 +34,66 @@ def _send(text: str):
 
 
 def _asset_name(raw: str) -> str:
-    """Strip exchange suffixes: BTCUSDT_UMCBL → BTC, BTCUSDT → BTC."""
     return raw.replace("USDT_UMCBL", "").replace("USDT_SPBL", "").replace("USDT", "")
 
 
+def _planned_rr(entry: float, sl: float, tp: float, side: str) -> float:
+    if side == "long":
+        risk   = entry - sl
+        reward = tp - entry
+    else:
+        risk   = sl - entry
+        reward = entry - tp
+    return round(reward / risk, 2) if risk > 0 else 0.0
+
+
 def notify_startup(pairs: list, equity: float):
-    """Ping on (re)start — confirms Telegram env vars are set."""
-    text = (
+    _send(
         f"<b>🚀 Fortuna Bot Started</b>\n"
-        f"Pairs  : {', '.join(pairs)}\n"
-        f"Equity : £{equity:.2f}"
+        f"Pairs : {', '.join(pairs)}"
     )
-    _send(text)
 
 
 def notify_open(symbol: str, side: str, timeframe_label: str,
-                entry: float, sl: float, tp: float,
-                risk_amount: float, equity: float):
+                entry: float, sl: float, tp: float):
     side_str = "LONG" if side == "long" else "SHORT"
     emoji    = "🟢" if side == "long" else "🔴"
     name     = _asset_name(symbol)
-    text = (
-        f"<b>{emoji} {side_str} — {name}</b>\n"
+    rr       = _planned_rr(entry, sl, tp, side)
+    _send(
+        f"<b>{emoji} {side_str} — {name} [{timeframe_label}]</b>\n"
         f"Entry : <b>${entry:,.4f}</b>\n"
         f"SL    : ${sl:,.4f}\n"
-        f"TP    : ${tp:,.4f}"
+        f"TP    : ${tp:,.4f}\n"
+        f"RR    : 1:{rr}"
     )
-    _send(text)
 
 
 def notify_close(symbol: str, side: str, timeframe_label: str,
                  entry: float, exit_price: float,
-                 pnl_usdt: float, equity: float, reason: str):
-    won       = pnl_usdt >= 0
-    emoji     = "✅" if won else "❌"
-    label     = "Take Profit" if "take_profit" in reason else "Stop Loss"
-    side_str  = "LONG" if side == "long" else "SHORT"
-    name      = _asset_name(symbol)
-    sign      = "+" if pnl_usdt >= 0 else ""
-    text = (
-        f"<b>{emoji} {label} — {name}  {side_str}</b>\n"
+                 pnl_usdt: float, reason: str,
+                 sl: float = 0.0, tp: float = 0.0):
+    won      = pnl_usdt >= 0
+    emoji    = "✅" if won else "❌"
+    result   = "WIN" if won else "LOSS"
+    side_str = "LONG" if side == "long" else "SHORT"
+    name     = _asset_name(symbol)
+    sign     = "+" if pnl_usdt >= 0 else ""
+
+    rr_line = ""
+    if sl and tp:
+        planned = _planned_rr(entry, sl, tp, side)
+        risk    = abs(entry - sl)
+        actual  = round(abs(exit_price - entry) / risk, 2) if risk > 0 else 0.0
+        rr_line = f"\nRR    : planned 1:{planned}  actual 1:{actual}"
+
+    _send(
+        f"<b>{emoji} {result} — {name} [{timeframe_label}]  {side_str}</b>\n"
         f"Entry : ${entry:,.4f}\n"
         f"Exit  : ${exit_price:,.4f}\n"
         f"P&L   : <b>{sign}£{pnl_usdt:.2f}</b>"
+        f"{rr_line}"
     )
-    _send(text)
-
-
-
-def notify_heartbeat(equity: float, tick: int,
-                     open_positions: dict,
-                     confidences: dict,
-                     threshold: float):
-    """
-    4-hourly status ping so the user can see the bot is alive
-    even during signal droughts.
-
-    confidences: {slot_key: (buy_p, sell_p, htf_direction)}
-    """
-    now_str = datetime.now(timezone.utc).strftime("%d %b %Y %H:%M UTC")
-
-    pos_lines = []
-    for slot, pos in open_positions.items():
-        side  = pos.get("side", "?").upper()
-        entry = pos.get("entry_price", 0)
-        name  = _asset_name(slot.split("_")[0] + "USDT")
-        pos_lines.append(f"  {'🟢' if side=='LONG' else '🔴'} {side} {name}  @ ${entry:,.2f}")
-
-    pos_block = "\n".join(pos_lines) if pos_lines else "  none"
-
-    conf_lines = []
-    for slot, (buy_p, sell_p, htf) in sorted(confidences.items()):
-        name   = _asset_name(slot)
-        htf_s  = "▲" if htf > 0 else ("▼" if htf < 0 else "–")
-        peak   = max(buy_p, sell_p)
-        dir_s  = "B" if buy_p >= sell_p else "S"
-        bar    = "█" * int(peak * 10) + "░" * (10 - int(peak * 10))
-        flag   = " ← close!" if peak >= threshold * 0.90 else ""
-        conf_lines.append(f"  {name:<6} {dir_s} {bar} {peak:.2f}  HTF{htf_s}{flag}")
-
-    conf_block = "\n".join(conf_lines) if conf_lines else "  no data"
-
-    text = (
-        f"<b>📡 Fortuna Status — {now_str}</b>\n"
-        f"Equity   : <b>£{equity:.2f}</b>  (tick #{tick})\n\n"
-        f"<b>Positions</b>\n{pos_block}\n\n"
-        f"<b>Confidence</b>  (thresh {threshold:.2f})\n"
-        f"<code>{conf_block}</code>"
-    )
-    _send(text)
 
 
 def notify_model_alert(slot: str, alert_type: str, detail: str):
@@ -134,9 +104,8 @@ def notify_model_alert(slot: str, alert_type: str, detail: str):
     }
     icon  = icons.get(alert_type, "ℹ️")
     label = alert_type.replace("_", " ").title()
-    text = (
-        f"<b>{icon} MODEL HEALTH  {label}</b>\n"
+    _send(
+        f"<b>{icon} MODEL HEALTH — {label}</b>\n"
         f"Slot   : {slot}\n"
         f"Detail : {detail}"
     )
-    _send(text)

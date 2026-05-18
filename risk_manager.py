@@ -15,11 +15,20 @@ Key changes vs v1:
 import json
 import logging
 import os
+import sys
 from dataclasses import dataclass, asdict
 from typing import Optional, Dict, Tuple
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
+
+# Cross-model position lock (graceful fallback if shared module not installed)
+try:
+    sys.path.insert(0, "/Users/Louis/shared")
+    from shared_positions import SharedPositions as _SP
+    _shared = _SP()
+except Exception:
+    _shared = None
 
 
 @dataclass
@@ -386,6 +395,11 @@ class RiskManager:
             return False, "daily loss limit reached"
         if slot_key in self.open_positions:
             return False, f"already have an open position for {slot_key}"
+        # Cross-model guard: block if Model 2 already holds this asset
+        if _shared is not None:
+            locked, holder = _shared.is_locked(self._base_symbol(slot_key))
+            if locked and holder != "M1":
+                return False, f"blocked by shared lock — {self._base_symbol(slot_key)} held by {holder}"
         if self.symbol_tier_has_open_position(slot_key):
             base = self._base_symbol(slot_key)
             tier = self._tf_tier(slot_key)
@@ -487,6 +501,8 @@ class RiskManager:
     def open_position(self, pos: Position, slot_key: str = ""):
         key = slot_key if slot_key else pos.pair
         self.open_positions[key] = pos
+        if _shared is not None:
+            _shared.claim("M1", pos.pair, pos.side)
         logger.info(
             "📈 OPEN  %s %s @ £%.4f | SL=£%.4f | TP=£%.4f | R/R=%.2f | Qty=%.5f | Lev=%dx",
             pos.side.upper(), pos.pair, pos.entry_price,
@@ -498,6 +514,8 @@ class RiskManager:
         pos = self.open_positions.pop(pair, None)
         if not pos:
             return None
+        if _shared is not None:
+            _shared.release("M1", pos.pair)
 
         # PnL in price terms
         if pos.side == "long":
@@ -536,6 +554,8 @@ class RiskManager:
             "side":              pos.side,
             "entry_price":       pos.entry_price,
             "exit_price":        exit_price,
+            "stop_loss":         pos.stop_loss,
+            "take_profit":       pos.take_profit,
             "quantity":          pos.quantity,
             "leverage":          pos.leverage,
             "confidence":        pos.confidence,

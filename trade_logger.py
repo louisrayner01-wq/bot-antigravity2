@@ -195,24 +195,32 @@ class TradeLogger:
                     symbol, timeframe, signal, confidence, skip_reason)
 
     def log_trade(self, trade: dict, equity_after: float, exit_reason: str = "signal"):
+        entry  = trade.get("entry_price", 0)
+        sl     = trade.get("stop_loss",   0)
+        qty    = trade.get("quantity",    0)
+        pnl    = trade.get("pnl_usdt",   0)
+        risk   = abs(entry - sl) * qty if entry and sl and qty else 0
+        rr     = round(pnl / risk, 3) if risk > 0 else 0.0
+
         row = {
             "timestamp":    datetime.utcnow().isoformat(),
             "pair":         trade.get("pair", ""),
             "slot_key":     trade.get("slot_key", ""),
             "side":         trade.get("side", ""),
-            "entry_price":  round(trade.get("entry_price", 0), 4),
+            "entry_price":  round(entry, 4),
             "exit_price":   round(trade.get("exit_price", 0), 4),
-            "quantity":     round(trade.get("quantity", 0), 6),
+            "quantity":     round(qty, 6),
             "leverage":     trade.get("leverage", 1),
             "confidence":   round(trade.get("confidence", 0.0), 4),
             "pnl_pct":      round(trade.get("pnl_pct", 0) * 100, 3),
-            "pnl_usdt":     round(trade.get("pnl_usdt", 0), 2),
+            "pnl_usdt":     round(pnl, 2),
             "candles_held": trade.get("candles_held", 0),
             "exit_reason":  exit_reason,
             "equity_after": round(equity_after, 2),
             "mae_pct":      round(trade.get("mae_pct", 0.0), 4),
             "mfe_pct":      round(trade.get("mfe_pct", 0.0), 4),
             "wick_breach":  trade.get("wick_breach", 0),
+            "rr":           rr,
         }
         self.records.append(row)
         with open(self.trades_file, "a", newline="") as f:
