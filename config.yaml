@@ -130,6 +130,12 @@ strategy:
     - "ETHUSDT_UMCBL_5m+1h"    # 5m+4h preferred for ETH
     - "ETHUSDT_UMCBL_5m+1d"    # 5m+4h preferred for ETH
 
+  # ── External model mode ───────────────────────────────────────────────────
+  # When true: load .joblib models from disk and never retrain them.
+  # Train models locally with backtest.py, copy to /data/models/ on Railway.
+  # The bot becomes a pure execution engine — no analysis, no self-training.
+  use_external_models: true
+
   # ── Fixed strategy list ────────────────────────────────────────────────────
   # Hardcoded strategies — bypasses analysis discovery entirely.
   # Proven profitable in 2yr backtest via strategy_search.py (2026-04-12).

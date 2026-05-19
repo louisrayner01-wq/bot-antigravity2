@@ -527,14 +527,18 @@ class TradingBot:
 
         # ── Step 2: Analysis ──────────────────────────────────────────────────
         self.log.info("STEP 2/3  Strategy analysis")
-        try:
-            stale_days = self.cfg.get("data", {}).get("analysis_stale_days", 7)
-            if not self.analyzer.results_are_fresh(max_age_days=stale_days):
-                self.analyzer.run()
-            else:
-                self.log.info("  Analysis results are fresh — skipping re-run.")
-        except Exception as exc:
-            self.log.error("Analysis error (continuing anyway): %s", exc)
+        use_external = self.cfg.get("strategy", {}).get("use_external_models", False)
+        if use_external:
+            self.log.info("  Skipped — use_external_models=true (strategies and models provided externally)")
+        else:
+            try:
+                stale_days = self.cfg.get("data", {}).get("analysis_stale_days", 7)
+                if not self.analyzer.results_are_fresh(max_age_days=stale_days):
+                    self.analyzer.run()
+                else:
+                    self.log.info("  Analysis results are fresh — skipping re-run.")
+            except Exception as exc:
+                self.log.error("Analysis error (continuing anyway): %s", exc)
 
         # ── Step 3: Apply recommendations + train ─────────────────────────────
         self.log.info("STEP 3/3  Initial model training")
@@ -884,11 +888,11 @@ class TradingBot:
     def _initial_train(self):
         """
         Train a separate model per active strategy (symbol × timeframe).
-        Skips training if a backtest-saved model is already loaded for that
-        slot — the backtest model is preferred as it was trained on the full
-        70% split and its confidence scores are directly comparable to the
-        0.55 threshold proven in walk-forward testing.
+        When use_external_models=true, skips training entirely if a model is
+        already loaded from disk — models are trained locally and uploaded.
         """
+        use_external = self.cfg.get("strategy", {}).get("use_external_models", False)
+
         strategies = self.active_strategies or [
             {
                 "symbol":   p["symbol"],
@@ -904,14 +908,11 @@ class TradingBot:
             name      = strat["name"]
             sig_label = strat["tf_label"]
             tf_min    = strat["tf_min"]
+            sym_key   = self.strategy._sym_key(symbol, sig_label)
 
-            # Always retrain from accumulated CSV data on startup.
-            # Previously saved models are discarded — ensures the model is
-            # always calibrated to the most recent candle history rather than
-            # silently reusing a potentially stale/mismatched saved model.
-            sym_key = self.strategy._sym_key(symbol, sig_label)
-            if sym_key in self.strategy.symbol_models:
-                del self.strategy.symbol_models[sym_key]
+            if use_external and sym_key in self.strategy.symbol_models:
+                self.log.info("✅ %s [%s] using external model — skipping retrain.", name, sig_label)
+                continue
 
             self.log.info("⏳ Training model for %s [%s]…", name, sig_label)
             hist = self.strategy.load_historical_candles(symbol, sig_label)
@@ -1432,22 +1433,26 @@ class TradingBot:
         slots = [s["slot_key"] for s in self.active_strategies]
 
         # ── 1. Monthly retrain ────────────────────────────────────────────────
-        retrain_interval_days = self.cfg.get("data", {}).get("retrain_interval_days", 28)
-        if self._last_monthly_retrain is None:
-            days_since = retrain_interval_days  # force on first check if never done
+        use_external = self.cfg.get("strategy", {}).get("use_external_models", False)
+        if use_external:
+            self.log.info("📅 Monthly retrain skipped — use_external_models=true")
         else:
-            days_since = (now.replace(tzinfo=None) -
-                          self._last_monthly_retrain.replace(tzinfo=None)).days
-        if days_since >= retrain_interval_days:
-            self.log.info("📅 Monthly retrain due (%d days since last — interval %d days)",
-                          days_since, retrain_interval_days)
-            try:
-                self._monthly_retrain()
-            except Exception as exc:
-                self.log.error("Monthly retrain failed: %s", exc)
-        else:
-            self.log.info("📅 Monthly retrain in %d day(s)",
-                          retrain_interval_days - days_since)
+            retrain_interval_days = self.cfg.get("data", {}).get("retrain_interval_days", 28)
+            if self._last_monthly_retrain is None:
+                days_since = retrain_interval_days  # force on first check if never done
+            else:
+                days_since = (now.replace(tzinfo=None) -
+                              self._last_monthly_retrain.replace(tzinfo=None)).days
+            if days_since >= retrain_interval_days:
+                self.log.info("📅 Monthly retrain due (%d days since last — interval %d days)",
+                              days_since, retrain_interval_days)
+                try:
+                    self._monthly_retrain()
+                except Exception as exc:
+                    self.log.error("Monthly retrain failed: %s", exc)
+            else:
+                self.log.info("📅 Monthly retrain in %d day(s)",
+                              retrain_interval_days - days_since)
 
         # ── 2. Signal drought check ───────────────────────────────────────────
         drought_days = self.cfg.get("data", {}).get("signal_drought_days", 14)
