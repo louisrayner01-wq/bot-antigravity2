@@ -17,8 +17,10 @@ from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
-SHARED_DIR   = os.path.dirname(os.path.abspath(__file__))
-SENT_FLAG    = os.path.join(SHARED_DIR, "last_summary_date.txt")
+# Persist the sent-flag on the Railway /data volume so redeploys don't reset it.
+# Fall back to the local directory when running outside Railway.
+_DATA_DIR  = "/data" if os.path.isdir("/data") else os.path.dirname(os.path.abspath(__file__))
+SENT_FLAG  = os.path.join(_DATA_DIR, "last_summary_date.txt")
 
 M1_CSV = "/data/trades.csv"                             # Railway volume path
 M2_CSV = "/Users/Louis/bot-fvg/data/trades_m2.csv"     # local path
