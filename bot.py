@@ -894,16 +894,26 @@ class TradingBot:
     def _download_models_from_github(self):
         """
         Download trained .joblib models from the GitHub release 'models-v1' into
-        /data/models/ if the directory is empty. Requires GITHUB_TOKEN env var.
-        No-op if models already present.
+        /data/models/. Requires GITHUB_TOKEN env var.
+        Set REFRESH_MODELS=true in Railway to force a re-download (deletes existing first).
+        No-op if models already present and REFRESH_MODELS not set.
         """
         models_dir = self.cfg["logging"]["models_dir"]
         os.makedirs(models_dir, exist_ok=True)
 
+        refresh = os.getenv("REFRESH_MODELS", "false").lower() == "true"
         existing = [f for f in os.listdir(models_dir) if f.endswith(".joblib")]
-        if existing:
+        if existing and not refresh:
             self.log.info("📦 External models already present (%d files) — skipping download.", len(existing))
             return
+
+        if existing and refresh:
+            self.log.info("🔄 REFRESH_MODELS=true — deleting %d old model file(s) before re-download.", len(existing))
+            for fname in existing:
+                try:
+                    os.remove(os.path.join(models_dir, fname))
+                except Exception as exc:
+                    self.log.warning("Could not delete %s: %s", fname, exc)
 
         token = os.getenv("GITHUB_TOKEN", "")
         repo  = os.getenv("GITHUB_REPO", "louisrayner01-wq/bot-antigravity2")
