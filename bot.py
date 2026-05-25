@@ -35,6 +35,7 @@ import os
 import json
 import yaml
 import shutil
+import urllib.request
 from datetime import datetime, timezone
 
 def utcnow():
@@ -518,6 +519,11 @@ class TradingBot:
         # corruption when state.json was stale (e.g. after a bad trade write).
         self._setup_leverage()
 
+        # ── Step 0b: Download external models from GitHub release ─────────────
+        use_external = self.cfg.get("strategy", {}).get("use_external_models", False)
+        if use_external:
+            self._download_models_from_github()
+
         # ── Step 1: Data collection ───────────────────────────────────────────
         self.log.info("STEP 1/3  Data collection")
         try:
@@ -884,6 +890,65 @@ class TradingBot:
         for s in strategies:
             self.log.info("     %s [%s]  cv=%.3f  slot=%s",
                           s["name"], s["tf_label"], s.get("cv_accuracy", 0), s["slot_key"])
+
+    def _download_models_from_github(self):
+        """
+        Download trained .joblib models from the GitHub release 'models-v1' into
+        /data/models/ if the directory is empty. Requires GITHUB_TOKEN env var.
+        No-op if models already present.
+        """
+        models_dir = self.cfg["logging"]["models_dir"]
+        os.makedirs(models_dir, exist_ok=True)
+
+        existing = [f for f in os.listdir(models_dir) if f.endswith(".joblib")]
+        if existing:
+            self.log.info("📦 External models already present (%d files) — skipping download.", len(existing))
+            return
+
+        token = os.getenv("GITHUB_TOKEN", "")
+        repo  = os.getenv("GITHUB_REPO", "louisrayner01-wq/bot-antigravity2")
+        tag   = os.getenv("MODEL_RELEASE_TAG", "models-v1")
+
+        self.log.info("📥 Downloading external models from GitHub release '%s'...", tag)
+
+        api_url = f"https://api.github.com/repos/{repo}/releases/tags/{tag}"
+        req = urllib.request.Request(api_url, headers={
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github.v3+json",
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                release = json.loads(resp.read())
+        except Exception as exc:
+            self.log.error("Could not fetch GitHub release info: %s", exc)
+            return
+
+        assets = release.get("assets", [])
+        if not assets:
+            self.log.error("No assets found in release '%s'.", tag)
+            return
+
+        downloaded = 0
+        for asset in assets:
+            name = asset["name"]
+            if not name.endswith(".joblib"):
+                continue
+            dl_url = asset["url"]
+            dest   = os.path.join(models_dir, name)
+            try:
+                dl_req = urllib.request.Request(dl_url, headers={
+                    "Authorization": f"token {token}",
+                    "Accept": "application/octet-stream",
+                })
+                with urllib.request.urlopen(dl_req, timeout=120) as resp, \
+                     open(dest, "wb") as fout:
+                    shutil.copyfileobj(resp, fout)
+                self.log.info("  ✅ %s  (%.1f MB)", name, os.path.getsize(dest) / 1e6)
+                downloaded += 1
+            except Exception as exc:
+                self.log.error("  ❌ Failed to download %s: %s", name, exc)
+
+        self.log.info("📦 Downloaded %d model file(s) to %s", downloaded, models_dir)
 
     def _initial_train(self):
         """

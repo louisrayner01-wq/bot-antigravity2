@@ -44,6 +44,7 @@ CONTRACT_BASE_URL = "https://api-contract.weex.com"
 FUTURES_ENDPOINTS = {
     "place_order":   "/capi/v3/order",
     "cancel_order":  "/capi/v3/order/cancel",
+    "order_detail":  "/capi/v3/order/detail",
     "set_leverage":  "/capi/v3/account/setLeverage",
     "account":       "/capi/v3/account",
     "position":      "/capi/v3/position/getPositions",
@@ -390,6 +391,65 @@ class WeexClient:
         }
         logger.info("Futures %s  %s  qty=%s", side.upper(), symbol, qty)
         return self._post(FUTURES_ENDPOINTS["place_order"], payload)
+
+    def futures_limit_order(self, symbol: str, side: str,
+                            qty: float, price: float) -> Optional[str]:
+        """
+        Place a futures LIMIT order and return the order ID (or None on failure).
+        side: 'open_long' | 'open_short' | 'close_long' | 'close_short'
+        """
+        plain = symbol.replace("_UMCBL", "")
+        payload = {
+            "symbol":     plain,
+            "marginCoin": "USDT",
+            "size":       str(round(qty, 6)),
+            "side":       side,
+            "orderType":  "limit",
+            "price":      str(round(price, 8)),
+        }
+        logger.info("Futures LIMIT %s  %s  qty=%s @ %s", side.upper(), plain, qty, price)
+        resp = self._post(FUTURES_ENDPOINTS["place_order"], payload)
+        return (resp.get("data") or {}).get("orderId")
+
+    def get_futures_order_status(self, symbol: str, order_id: str) -> str:
+        """
+        Return the status string for a futures order.
+        Typical values: 'open', 'filled', 'full_fill', 'cancelled', 'cancel'.
+        Falls back to checking open_orders if detail endpoint fails.
+        """
+        plain = symbol.replace("_UMCBL", "")
+        data  = self._get(FUTURES_ENDPOINTS["order_detail"],
+                          {"symbol": plain, "orderId": order_id})
+        detail = (data.get("data") or {})
+        status = detail.get("status") or detail.get("state") or ""
+        if status:
+            return str(status).lower()
+        # Fallback: if order is absent from open orders it has been filled/cancelled
+        open_data = self._get(FUTURES_ENDPOINTS["open_orders"],
+                              {"symbol": plain, "marginCoin": "USDT"})
+        open_ids = {o.get("orderId") for o in (open_data.get("data") or [])}
+        return "open" if order_id in open_ids else "filled"
+
+    def cancel_futures_order(self, symbol: str, order_id: str) -> Dict:
+        """Cancel an open futures limit order."""
+        plain = symbol.replace("_UMCBL", "")
+        payload = {"symbol": plain, "marginCoin": "USDT", "orderId": order_id}
+        logger.info("Cancel futures order %s  %s", plain, order_id)
+        return self._post(FUTURES_ENDPOINTS["cancel_order"], payload)
+
+    def get_futures_last_price(self, symbol: str) -> Optional[float]:
+        """Return the last traded price for a futures symbol."""
+        ticker = self.get_ticker(symbol if "_UMCBL" in symbol else symbol + "_UMCBL")
+        if ticker is None:
+            return None
+        for key in ("lastPr", "last", "close", "markPrice"):
+            val = ticker.get(key)
+            if val is not None:
+                try:
+                    return float(val)
+                except (ValueError, TypeError):
+                    pass
+        return None
 
     def place_tpsl(self, symbol: str, hold_side: str,
                    sl_price: float, tp_price: float,
