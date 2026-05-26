@@ -1,5 +1,5 @@
 # Backtest Summary
-_Generated: 2026-05-26 08:56 UTC_
+_Generated: 2026-05-26 09:11 UTC_
 
 ## Strategy Results (flat sizing)
 
