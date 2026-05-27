@@ -36,7 +36,7 @@ import joblib
 from typing import Tuple, Optional, List, Dict
 
 from sklearn.ensemble import (RandomForestClassifier,
-                               GradientBoostingClassifier,
+                               HistGradientBoostingClassifier,
                                ExtraTreesClassifier,
                                VotingClassifier)
 from sklearn.model_selection import cross_val_score
@@ -271,31 +271,28 @@ def retrain_frequency(total_trades: int, stages: List[Dict]) -> int:
 
 def build_model() -> VotingClassifier:
     """
-    RF + GradientBoosting + ExtraTrees, soft-vote ensemble.
+    RF + HistGradientBoosting + ExtraTrees, soft-vote ensemble.
 
-    CalibratedClassifierCV removed: it compressed probabilities toward the
-    class prior (~0.07 for BUY with 16% label frequency), making signals
-    impossible to detect. Raw soft-vote probabilities from balanced trees
-    output ~0.33 when uncertain and push toward 0.45-0.55 on genuine signals,
-    which works well with the 0.38 threshold + HTF confluence gate.
-
-    class_weight="balanced" on RF and ET ensures the ensemble doesn't
-    collapse to predicting HOLD on all 68% HOLD-majority training data.
+    All three estimators use class_weight="balanced" so that the 83% HOLD
+    label majority doesn't suppress BUY/SELL probabilities below the 0.38
+    threshold. HistGradientBoostingClassifier replaces the old GradientBoosting
+    which did not support class_weight — that caused GB to vote near class priors
+    (0.09 BUY) and drag the soft-vote average from ~0.45 down to ~0.17.
     """
     rf = RandomForestClassifier(
         n_estimators=100, max_depth=8,
         min_samples_leaf=10, class_weight="balanced", random_state=42, n_jobs=1,
     )
-    gb = GradientBoostingClassifier(
-        n_estimators=80, max_depth=4,
-        learning_rate=0.05, random_state=42,
+    hgb = HistGradientBoostingClassifier(
+        max_iter=100, max_depth=4,
+        learning_rate=0.05, random_state=42, class_weight="balanced",
     )
     et = ExtraTreesClassifier(
         n_estimators=100, max_depth=8,
         min_samples_leaf=10, class_weight="balanced", random_state=42, n_jobs=1,
     )
     return VotingClassifier(
-        estimators=[("rf", rf), ("gb", gb), ("et", et)], voting="soft"
+        estimators=[("rf", rf), ("hgb", hgb), ("et", et)], voting="soft"
     )
 
 
@@ -599,7 +596,10 @@ class TradingStrategy:
         df = compute_features(df)
         available = [c for c in self.selected_features if c in df.columns]
         X = df[available].replace([np.inf, -np.inf], np.nan)
-        return X.dropna()
+        # Forward-fill then back-fill so the final row always has values.
+        # dropna() on the last row was silently returning HOLD when any indicator
+        # lacked enough lookback candles (e.g. EMA200 on a short live window).
+        return X.ffill().bfill().dropna()
 
     # ── Training ──────────────────────────────────────────────────────────────
 

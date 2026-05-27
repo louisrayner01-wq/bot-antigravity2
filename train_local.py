@@ -34,6 +34,25 @@ cfg["logging"]["models_dir"] = OUTPUT_DIR
 cfg["logging"]["trades_file"] = "/tmp/trades_train_local.csv"
 
 sys.path.insert(0, os.path.dirname(__file__))
+import strategy as _strategy_mod
+from sklearn.ensemble import (RandomForestClassifier, HistGradientBoostingClassifier,
+                               ExtraTreesClassifier, VotingClassifier)
+
+def _fast_build_model():
+    """Same as build_model() but n_jobs=-1 for local training speed."""
+    rf  = RandomForestClassifier(n_estimators=100, max_depth=8,
+                                 min_samples_leaf=10, class_weight="balanced",
+                                 random_state=42, n_jobs=-1)
+    hgb = HistGradientBoostingClassifier(max_iter=100, max_depth=4,
+                                         learning_rate=0.05, random_state=42,
+                                         class_weight="balanced")
+    et  = ExtraTreesClassifier(n_estimators=100, max_depth=8,
+                               min_samples_leaf=10, class_weight="balanced",
+                               random_state=42, n_jobs=-1)
+    return VotingClassifier(estimators=[("rf", rf), ("hgb", hgb), ("et", et)], voting="soft")
+
+_strategy_mod.build_model = _fast_build_model
+
 from strategy import TradingStrategy
 
 strategy = TradingStrategy(cfg)
