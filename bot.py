@@ -529,7 +529,7 @@ class TradingBot:
             self.strategy.symbol_models.clear()
             self.strategy.symbol_scalers.clear()
             self.strategy.symbol_features.clear()
-            self.strategy._load_models()
+            self.strategy._try_load_symbol_models()
             self.log.info("🔄 Models reloaded from disk (%d → %d slots)",
                           prev_count, len(self.strategy.symbol_models))
 
