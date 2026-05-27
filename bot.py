@@ -522,7 +522,16 @@ class TradingBot:
         # ── Step 0b: Download external models from GitHub release ─────────────
         use_external = self.cfg.get("strategy", {}).get("use_external_models", False)
         if use_external:
+            prev_count = len(self.strategy.symbol_models)
             self._download_models_from_github()
+            # Reload models from disk — constructor loaded whatever was there before
+            # the download ran; new files are only useful after an explicit reload.
+            self.strategy.symbol_models.clear()
+            self.strategy.symbol_scalers.clear()
+            self.strategy.symbol_features.clear()
+            self.strategy._load_models()
+            self.log.info("🔄 Models reloaded from disk (%d → %d slots)",
+                          prev_count, len(self.strategy.symbol_models))
 
         # ── Step 1: Data collection ───────────────────────────────────────────
         self.log.info("STEP 1/3  Data collection")
