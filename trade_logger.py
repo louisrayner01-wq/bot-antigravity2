@@ -23,6 +23,7 @@ class TradeLogger:
         "mae_pct",      # Max Adverse Excursion as % of entry (e.g. 1.25 = 1.25%)
         "mfe_pct",      # Max Favorable Excursion as % of entry
         "wick_breach",  # 1 if price violated the entry candle's wick before close
+        "rr",           # Actual R/R: pnl / (|entry - sl| * qty)
     ]
 
     # Fields recorded when a valid signal is skipped due to position already open.
