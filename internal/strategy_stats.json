@@ -28,5 +28,15 @@
     "total_pnl_usdt": -27.4,
     "avg_pnl_usdt": -1.83,
     "last_trade": "2026-04-29T15:16:20.177511"
+  },
+  "ETHUSDT_UMCBL_5m+4h": {
+    "trades": 1,
+    "wins": 0,
+    "losses": 1,
+    "win_rate_pct": 0.0,
+    "avg_confidence": 0.4139,
+    "total_pnl_usdt": -6.2,
+    "avg_pnl_usdt": -6.2,
+    "last_trade": "2026-05-28T14:32:16.142517"
   }
 }
