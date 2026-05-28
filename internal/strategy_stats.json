@@ -38,5 +38,15 @@
     "total_pnl_usdt": -15.86,
     "avg_pnl_usdt": -7.93,
     "last_trade": "2026-05-28T16:32:16.167241"
+  },
+  "XRPUSDT_UMCBL_5m+4h": {
+    "trades": 1,
+    "wins": 0,
+    "losses": 1,
+    "win_rate_pct": 0.0,
+    "avg_confidence": 0.3694,
+    "total_pnl_usdt": -6.08,
+    "avg_pnl_usdt": -6.08,
+    "last_trade": "2026-05-28T20:02:16.151090"
   }
 }
