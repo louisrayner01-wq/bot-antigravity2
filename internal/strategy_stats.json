@@ -1,13 +1,13 @@
 {
   "BTCUSDT_UMCBL_5m+4h": {
-    "trades": 54,
-    "wins": 17,
+    "trades": 55,
+    "wins": 18,
     "losses": 37,
-    "win_rate_pct": 31.5,
-    "avg_confidence": 0.5305,
-    "total_pnl_usdt": -44.39,
-    "avg_pnl_usdt": -0.82,
-    "last_trade": "2026-06-02T14:32:16.254895"
+    "win_rate_pct": 32.7,
+    "avg_confidence": 0.5295,
+    "total_pnl_usdt": -40.63,
+    "avg_pnl_usdt": -0.74,
+    "last_trade": "2026-06-02T19:32:16.293279"
   },
   "SOLUSDT_UMCBL_5m+4h": {
     "trades": 82,
@@ -30,14 +30,14 @@
     "last_trade": "2026-04-29T15:16:20.177511"
   },
   "ETHUSDT_UMCBL_5m+4h": {
-    "trades": 7,
-    "wins": 2,
+    "trades": 8,
+    "wins": 3,
     "losses": 5,
-    "win_rate_pct": 28.6,
-    "avg_confidence": 0.4068,
-    "total_pnl_usdt": -11.38,
-    "avg_pnl_usdt": -1.63,
-    "last_trade": "2026-06-01T20:32:16.241238"
+    "win_rate_pct": 37.5,
+    "avg_confidence": 0.4105,
+    "total_pnl_usdt": -6.51,
+    "avg_pnl_usdt": -0.81,
+    "last_trade": "2026-06-02T19:32:19.136553"
   },
   "XRPUSDT_UMCBL_5m+4h": {
     "trades": 2,
