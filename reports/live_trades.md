@@ -1,5 +1,5 @@
 # Live Trades
-_Updated: 2026-06-02 16:02 UTC_
+_Updated: 2026-06-02 16:17 UTC_
 _Total: 160 trades_
 
 **Overall: 57W / 103L  (36% WR)  Total PnL: -74.59 USDT**
