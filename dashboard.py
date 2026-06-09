@@ -19,7 +19,6 @@ import time
 import zipfile
 from datetime import datetime, timezone
 
-import requests as _requests
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from PIL import Image, ImageDraw
@@ -204,29 +203,7 @@ def get_trades():
     return list(reversed(trades[-100:]))  # newest first
 
 
-_WEEX_SYMBOLS = [
-    ("BTCUSDT_UMCBL", "BTC"),
-    ("ETHUSDT_UMCBL", "ETH"),
-    ("SOLUSDT_UMCBL", "SOL"),
-    ("XRPUSDT_UMCBL", "XRP"),
-]
-_WEEX_CANDLE_URL = "https://api-contract.weex.com/capi/v3/market/klines"
 _MODELS_DIR = os.environ.get("MODELS_DIR", "/data/models")
-
-
-def _check_weex_symbol(sym: str) -> dict:
-    plain = sym.replace("_UMCBL", "")
-    try:
-        r = _requests.get(
-            _WEEX_CANDLE_URL,
-            params={"symbol": plain, "interval": "1h", "limit": 1},
-            timeout=6,
-        )
-        data = r.json().get("data", [])
-        ok = bool(data)
-        return {"ok": ok, "detail": "ok" if ok else "empty response"}
-    except Exception as exc:
-        return {"ok": False, "detail": str(exc)[:80]}
 
 
 @app.get("/api/system")
@@ -234,7 +211,7 @@ def get_system():
     now = datetime.now(timezone.utc)
     checks = {}
 
-    # ── Bot heartbeat ──────────────────────────────────────────────────────────
+    # ── Load state.json once ──────────────────────────────────────────────────
     state = None
     state_age_s = None
     if os.path.exists(STATE_FILE):
@@ -247,36 +224,67 @@ def get_system():
                 if ts.tzinfo is None:
                     ts = ts.replace(tzinfo=timezone.utc)
                 state_age_s = int((now - ts).total_seconds())
-            heartbeat_ok = state_age_s is not None and state_age_s < 1500  # 25 min
-            checks["bot_heartbeat"] = {
-                "ok": heartbeat_ok,
-                "label": "Bot Heartbeat",
-                "detail": f"Last tick {state_age_s}s ago" if state_age_s is not None else "State file unreadable",
-            }
-        except Exception as exc:
-            checks["bot_heartbeat"] = {"ok": False, "label": "Bot Heartbeat", "detail": str(exc)[:80]}
-    else:
-        checks["bot_heartbeat"] = {"ok": False, "label": "Bot Heartbeat", "detail": "state.json not found"}
+        except Exception:
+            pass
 
-    # ── Trading mode ──────────────────────────────────────────────────────────
+    # ── 1. Bot Cycle (is the bot ticking?) ───────────────────────────────────
+    if state is None:
+        checks["bot_cycle"] = {"ok": False, "label": "Bot Cycle", "detail": "state.json not found — bot may be starting up"}
+    elif state_age_s is None:
+        checks["bot_cycle"] = {"ok": False, "label": "Bot Cycle", "detail": "Could not read last tick time"}
+    else:
+        mins = state_age_s // 60
+        secs = state_age_s % 60
+        age_str = f"{mins}m {secs}s ago" if mins else f"{secs}s ago"
+        # Tick interval is 15 min; allow up to 25 min before flagging
+        ok = state_age_s < 1500
+        checks["bot_cycle"] = {
+            "ok": ok,
+            "label": "Bot Cycle",
+            "detail": f"Last tick {age_str}" if ok else f"No tick for {age_str} — bot may be down",
+        }
+
+    # ── 2. Trading Mode ───────────────────────────────────────────────────────
     is_paper = state.get("paper", True) if state else True
     checks["trading_mode"] = {
         "ok": not is_paper,
         "warn": is_paper,
         "label": "Trading Mode",
-        "detail": "Paper trading (simulated)" if is_paper else "LIVE — real orders",
+        "detail": "Paper trading — simulated orders" if is_paper else "LIVE — real orders on WEEX",
     }
 
-    # ── Open positions ────────────────────────────────────────────────────────
+    # ── 3. Equity Health ──────────────────────────────────────────────────────
+    if state:
+        equity = state.get("equity", 0)
+        hwm    = state.get("hwm", equity) or equity
+        dd_pct = round((1 - equity / hwm) * 100, 1) if hwm else 0
+        eq_ok  = dd_pct < 10
+        eq_warn = 10 <= dd_pct < 20
+        checks["equity"] = {
+            "ok": eq_ok and not eq_warn,
+            "warn": eq_warn,
+            "label": "Equity",
+            "detail": f"${equity:.2f}  (HWM ${hwm:.2f}  DD {dd_pct:.1f}%)" if dd_pct > 0 else f"${equity:.2f}  at high-water mark",
+        }
+    else:
+        checks["equity"] = {"ok": False, "label": "Equity", "detail": "No state data"}
+
+    # ── 4. Open Positions ─────────────────────────────────────────────────────
     positions = state.get("positions", {}) if state else {}
+    pos_details = []
+    for slot, p in positions.items():
+        side = p.get("side", "?").upper()
+        entry = p.get("entry_price", 0)
+        sym = slot.split("_")[0]
+        pos_details.append(f"{sym} {side} @ {entry:.4f}")
     checks["open_positions"] = {
         "ok": True,
         "label": "Open Positions",
-        "detail": f"{len(positions)} open" if positions else "None open",
-        "positions": list(positions.keys()),
+        "detail": f"{len(positions)} open" if positions else "None — flat",
+        "positions": pos_details,
     }
 
-    # ── ML Models ────────────────────────────────────────────────────────────
+    # ── 5. ML Models ─────────────────────────────────────────────────────────
     expected_models = ["BTCUSDT_5m.joblib", "ETHUSDT_5m.joblib", "SOLUSDT_5m.joblib", "XRPUSDT_5m.joblib"]
     model_results = {}
     for m in expected_models:
@@ -288,26 +296,38 @@ def get_system():
     checks["ml_models"] = {
         "ok": all_models_ok,
         "label": "ML Models",
-        "detail": "All 4 models loaded" if all_models_ok else "Missing models",
+        "detail": "All 4 models present" if all_models_ok else "One or more models missing",
         "models": model_results,
     }
 
-    # ── Trades file ───────────────────────────────────────────────────────────
-    trades_ok = os.path.exists(TRADES_FILE)
-    trade_count = 0
-    if trades_ok:
+    # ── 6. Recent Trades ─────────────────────────────────────────────────────
+    last_trade_str = "No trades yet"
+    trade_count    = 0
+    today_pnl      = 0.0
+    today_str      = now.strftime("%Y-%m-%d")
+    if os.path.exists(TRADES_FILE):
         try:
             with open(TRADES_FILE, newline="") as f:
-                trade_count = sum(1 for _ in csv.DictReader(f))
+                rows = list(csv.DictReader(f))
+            trade_count = len(rows)
+            if rows:
+                last_ts  = rows[-1].get("timestamp", "")
+                last_pair = rows[-1].get("pair", "")
+                last_pnl  = rows[-1].get("pnl_usdt", "")
+                last_trade_str = f"{last_pair}  {last_ts[:16].replace('T',' ')}  {'+' if float(last_pnl or 0) >= 0 else ''}{float(last_pnl or 0):.2f} USDT"
+            today_pnl = sum(
+                float(r.get("pnl_usdt", 0) or 0)
+                for r in rows if r.get("timestamp", "").startswith(today_str)
+            )
         except Exception:
             pass
-    checks["trades_file"] = {
-        "ok": trades_ok,
-        "label": "Trades File",
-        "detail": f"{trade_count} trades recorded" if trades_ok else "trades.csv not found",
+    checks["recent_trades"] = {
+        "ok": True,
+        "label": "Recent Trades",
+        "detail": f"{trade_count} total  |  Today: {'+' if today_pnl >= 0 else ''}{today_pnl:.2f} USDT  |  Last: {last_trade_str}",
     }
 
-    # ── Telegram ──────────────────────────────────────────────────────────────
+    # ── 7. Telegram Alerts ───────────────────────────────────────────────────
     tg_token   = bool(os.environ.get("TELEGRAM_TOKEN"))
     tg_chat    = bool(os.environ.get("TELEGRAM_CHAT_ID"))
     tg_enabled = os.environ.get("TELEGRAM_ENABLED", "true").lower() == "true"
@@ -316,25 +336,14 @@ def get_system():
         "ok": tg_ok,
         "label": "Telegram Alerts",
         "detail": "Configured and enabled" if tg_ok else (
-            "Disabled via TELEGRAM_ENABLED" if (tg_token and tg_chat and not tg_enabled)
+            "Disabled (TELEGRAM_ENABLED=false)" if (tg_token and tg_chat and not tg_enabled)
             else "Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID"
         ),
     }
 
-    # ── WEEX connectivity (one call per symbol, done in sequence) ─────────────
-    weex_results = {}
-    for sym, name in _WEEX_SYMBOLS:
-        weex_results[name] = _check_weex_symbol(sym)
-    all_weex_ok = all(v["ok"] for v in weex_results.values())
-    checks["weex_api"] = {
-        "ok": all_weex_ok,
-        "label": "WEEX Candle API",
-        "detail": "All symbols reachable" if all_weex_ok else "Some symbols failing",
-        "symbols": weex_results,
-    }
-
     overall_ok = all(
-        c["ok"] for k, c in checks.items() if k not in ("trading_mode", "open_positions")
+        c["ok"] for k, c in checks.items()
+        if k not in ("trading_mode", "open_positions", "recent_trades")
     )
     return {"ok": overall_ok, "checked_at": now.isoformat(), "checks": checks}
 
@@ -1493,17 +1502,6 @@ function dot(ok, warn) {
   return ok ? '<span class="dot ok"></span>' : '<span class="dot fail"></span>';
 }
 
-function renderWeex(symbols) {
-  if (!symbols) return '';
-  return Object.entries(symbols).map(function(kv) {
-    var name = kv[0], v = kv[1];
-    return '<div class="sub-row">'
-      + '<span class="sub-name">' + name + '</span>'
-      + '<span class="' + (v.ok ? 'sub-ok' : 'sub-fail') + '">' + (v.ok ? '✓ OK' : '✗ ' + v.detail) + '</span>'
-      + '</div>';
-  }).join('');
-}
-
 function renderModels(models) {
   if (!models) return '';
   return Object.entries(models).map(function(kv) {
@@ -1511,14 +1509,14 @@ function renderModels(models) {
     return '<div class="sub-row">'
       + '<span class="sub-name">' + name + '</span>'
       + (v.ok
-        ? '<span class="sub-ok">✓ ' + v.size_mb + ' MB</span>'
-        : '<span class="sub-fail">✗ Missing</span>')
+        ? '<span class="sub-ok">&#10003; ' + v.size_mb + ' MB</span>'
+        : '<span class="sub-fail">&#10007; Missing</span>')
       + '</div>';
   }).join('');
 }
 
 function renderPositions(positions) {
-  if (!positions || positions.length === 0) return '<div class="sub-row"><span class="sub-detail">No open positions</span></div>';
+  if (!positions || positions.length === 0) return '<div class="sub-row"><span class="sub-detail">No open positions — flat</span></div>';
   return positions.map(function(p) {
     return '<div class="sub-row"><span class="sub-name">' + p + '</span><span class="sub-ok">Open</span></div>';
   }).join('');
@@ -1528,8 +1526,7 @@ function renderCard(key, check) {
   var isWarn = check.warn || false;
   var bodyHtml = '';
 
-  if (key === 'weex_api' && check.symbols) bodyHtml = renderWeex(check.symbols);
-  else if (key === 'ml_models' && check.models) bodyHtml = renderModels(check.models);
+  if (key === 'ml_models' && check.models) bodyHtml = renderModels(check.models);
   else if (key === 'open_positions') bodyHtml = renderPositions(check.positions || []);
   else if (check.detail) bodyHtml = '<div class="sub-row"><span class="sub-detail">' + check.detail + '</span></div>';
 
@@ -1561,7 +1558,7 @@ function render(data) {
   icon.textContent = data.ok ? '✅' : '⚠️';
   text.textContent = data.ok ? 'All systems operational' : 'One or more systems need attention';
 
-  var order = ['bot_heartbeat','trading_mode','weex_api','ml_models','trades_file','telegram','open_positions'];
+  var order = ['bot_cycle','trading_mode','equity','open_positions','ml_models','recent_trades','telegram'];
   var html = '';
   order.forEach(function(k) {
     if (data.checks[k]) html += renderCard(k, data.checks[k]);
