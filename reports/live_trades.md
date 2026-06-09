@@ -1,16 +1,17 @@
 # Live Trades
-_Updated: 2026-06-09 15:55 UTC_
-_Total: 165 trades_
+_Updated: 2026-06-09 16:10 UTC_
+_Total: 166 trades_
 
-**Overall: 59W / 106L  (36% WR)  Total PnL: -71.88 USDT**
+**Overall: 59W / 107L  (36% WR)  Total PnL: -75.97 USDT**
 
-## 2026-06-09  —  3 trades  |  0% WR  |  -5.92 USDT
+## 2026-06-09  —  4 trades  |  0% WR  |  -10.01 USDT
 
 | Time (UTC) | Slot | Side | Outcome | PnL USDT | PnL % | Equity |
 |------------|------|------|---------|----------|-------|--------|
 | 11:40 | BTCUSDT_UMCBL_5m+4h | LONG | ❌ SL | -1.20 | -0.39% | £48.41 |
 | 14:25 | BTCUSDT_UMCBL_5m+4h | LONG | ❌ SL | -1.86 | -0.47% | £46.55 |
 | 14:55 | BTCUSDT_UMCBL_5m+4h | LONG | ❌ SL | -2.86 | -0.62% | £43.68 |
+| 16:10 | ETHUSDT_UMCBL_5m+4h | LONG | ❌ SL | -4.09 | -0.89% | £39.60 |
 
 ## 2026-06-02  —  7 trades  |  100% WR  |  +20.95 USDT
 
