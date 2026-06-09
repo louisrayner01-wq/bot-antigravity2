@@ -30,14 +30,14 @@
     "last_trade": "2026-04-29T15:16:20.177511"
   },
   "ETHUSDT_UMCBL_5m+4h": {
-    "trades": 8,
+    "trades": 9,
     "wins": 3,
-    "losses": 5,
-    "win_rate_pct": 37.5,
-    "avg_confidence": 0.4105,
-    "total_pnl_usdt": -6.51,
-    "avg_pnl_usdt": -0.81,
-    "last_trade": "2026-06-02T19:32:19.136553"
+    "losses": 6,
+    "win_rate_pct": 33.3,
+    "avg_confidence": 0.412,
+    "total_pnl_usdt": -10.6,
+    "avg_pnl_usdt": -1.18,
+    "last_trade": "2026-06-09T16:10:09.125819"
   },
   "XRPUSDT_UMCBL_5m+4h": {
     "trades": 2,
