@@ -33,6 +33,7 @@ import logging
 import numpy as np
 import pandas as pd
 import joblib
+import sklearn
 from typing import Tuple, Optional, List, Dict
 
 from sklearn.ensemble import (RandomForestClassifier,
@@ -41,6 +42,15 @@ from sklearn.ensemble import (RandomForestClassifier,
                                VotingClassifier)
 from sklearn.model_selection import cross_val_score
 from sklearn.preprocessing import StandardScaler
+
+_EXPECTED_SKLEARN = "1.6.1"
+if sklearn.__version__ != _EXPECTED_SKLEARN:
+    import logging as _log
+    _log.getLogger(__name__).error(
+        "SKLEARN VERSION MISMATCH: expected %s but got %s — models may fail to load "
+        "or produce silent wrong predictions. Pin scikit-learn==%s in requirements.txt.",
+        _EXPECTED_SKLEARN, sklearn.__version__, _EXPECTED_SKLEARN,
+    )
 
 from indicators import FEATURE_COLS, compute_features
 
