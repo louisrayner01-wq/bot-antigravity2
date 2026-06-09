@@ -15,8 +15,11 @@ import csv
 import io
 import json
 import os
+import time
 import zipfile
+from datetime import datetime, timezone
 
+import requests as _requests
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from PIL import Image, ImageDraw
@@ -199,6 +202,141 @@ def get_trades():
         for row in reader:
             trades.append(row)
     return list(reversed(trades[-100:]))  # newest first
+
+
+_WEEX_SYMBOLS = [
+    ("BTCUSDT_UMCBL", "BTC"),
+    ("ETHUSDT_UMCBL", "ETH"),
+    ("SOLUSDT_UMCBL", "SOL"),
+    ("XRPUSDT_UMCBL", "XRP"),
+]
+_WEEX_CANDLE_URL = "https://api-contract.weex.com/capi/v3/market/klines"
+_MODELS_DIR = os.environ.get("MODELS_DIR", "/data/models")
+
+
+def _check_weex_symbol(sym: str) -> dict:
+    plain = sym.replace("_UMCBL", "")
+    try:
+        r = _requests.get(
+            _WEEX_CANDLE_URL,
+            params={"symbol": plain, "interval": "1h", "limit": 1},
+            timeout=6,
+        )
+        data = r.json().get("data", [])
+        ok = bool(data)
+        return {"ok": ok, "detail": "ok" if ok else "empty response"}
+    except Exception as exc:
+        return {"ok": False, "detail": str(exc)[:80]}
+
+
+@app.get("/api/system")
+def get_system():
+    now = datetime.now(timezone.utc)
+    checks = {}
+
+    # ── Bot heartbeat ──────────────────────────────────────────────────────────
+    state = None
+    state_age_s = None
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE) as f:
+                state = json.load(f)
+            updated_at = state.get("updated_at", "")
+            if updated_at:
+                ts = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                state_age_s = int((now - ts).total_seconds())
+            heartbeat_ok = state_age_s is not None and state_age_s < 1500  # 25 min
+            checks["bot_heartbeat"] = {
+                "ok": heartbeat_ok,
+                "label": "Bot Heartbeat",
+                "detail": f"Last tick {state_age_s}s ago" if state_age_s is not None else "State file unreadable",
+            }
+        except Exception as exc:
+            checks["bot_heartbeat"] = {"ok": False, "label": "Bot Heartbeat", "detail": str(exc)[:80]}
+    else:
+        checks["bot_heartbeat"] = {"ok": False, "label": "Bot Heartbeat", "detail": "state.json not found"}
+
+    # ── Trading mode ──────────────────────────────────────────────────────────
+    is_paper = state.get("paper", True) if state else True
+    checks["trading_mode"] = {
+        "ok": not is_paper,
+        "warn": is_paper,
+        "label": "Trading Mode",
+        "detail": "Paper trading (simulated)" if is_paper else "LIVE — real orders",
+    }
+
+    # ── Open positions ────────────────────────────────────────────────────────
+    positions = state.get("positions", {}) if state else {}
+    checks["open_positions"] = {
+        "ok": True,
+        "label": "Open Positions",
+        "detail": f"{len(positions)} open" if positions else "None open",
+        "positions": list(positions.keys()),
+    }
+
+    # ── ML Models ────────────────────────────────────────────────────────────
+    expected_models = ["BTCUSDT_5m.joblib", "ETHUSDT_5m.joblib", "SOLUSDT_5m.joblib", "XRPUSDT_5m.joblib"]
+    model_results = {}
+    for m in expected_models:
+        path = os.path.join(_MODELS_DIR, m)
+        exists = os.path.exists(path)
+        size_mb = round(os.path.getsize(path) / 1e6, 1) if exists else 0
+        model_results[m] = {"ok": exists, "size_mb": size_mb}
+    all_models_ok = all(v["ok"] for v in model_results.values())
+    checks["ml_models"] = {
+        "ok": all_models_ok,
+        "label": "ML Models",
+        "detail": "All 4 models loaded" if all_models_ok else "Missing models",
+        "models": model_results,
+    }
+
+    # ── Trades file ───────────────────────────────────────────────────────────
+    trades_ok = os.path.exists(TRADES_FILE)
+    trade_count = 0
+    if trades_ok:
+        try:
+            with open(TRADES_FILE, newline="") as f:
+                trade_count = sum(1 for _ in csv.DictReader(f))
+        except Exception:
+            pass
+    checks["trades_file"] = {
+        "ok": trades_ok,
+        "label": "Trades File",
+        "detail": f"{trade_count} trades recorded" if trades_ok else "trades.csv not found",
+    }
+
+    # ── Telegram ──────────────────────────────────────────────────────────────
+    tg_token   = bool(os.environ.get("TELEGRAM_TOKEN"))
+    tg_chat    = bool(os.environ.get("TELEGRAM_CHAT_ID"))
+    tg_enabled = os.environ.get("TELEGRAM_ENABLED", "true").lower() == "true"
+    tg_ok = tg_token and tg_chat and tg_enabled
+    checks["telegram"] = {
+        "ok": tg_ok,
+        "label": "Telegram Alerts",
+        "detail": "Configured and enabled" if tg_ok else (
+            "Disabled via TELEGRAM_ENABLED" if (tg_token and tg_chat and not tg_enabled)
+            else "Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID"
+        ),
+    }
+
+    # ── WEEX connectivity (one call per symbol, done in sequence) ─────────────
+    weex_results = {}
+    for sym, name in _WEEX_SYMBOLS:
+        weex_results[name] = _check_weex_symbol(sym)
+    all_weex_ok = all(v["ok"] for v in weex_results.values())
+    checks["weex_api"] = {
+        "ok": all_weex_ok,
+        "label": "WEEX Candle API",
+        "detail": "All symbols reachable" if all_weex_ok else "Some symbols failing",
+        "symbols": weex_results,
+    }
+
+    overall_ok = all(
+        c["ok"] for k, c in checks.items() if k not in ("trading_mode", "open_positions")
+    )
+    return {"ok": overall_ok, "checked_at": now.isoformat(), "checks": checks}
 
 
 # ── JavaScript (served separately so template literals work without escaping) ──
@@ -542,6 +680,9 @@ HTML = """<!DOCTYPE html>
     </a>
     <a href="/calendar" style="text-decoration:none;">
       <div class="badge" style="background:#2d3148;color:#90cdf4;cursor:pointer;">&#x1F4C5; Calendar</div>
+    </a>
+    <a href="/system" style="text-decoration:none;">
+      <div class="badge" style="background:#2d3148;color:#90cdf4;cursor:pointer;">&#x2699;&#xFE0F; System</div>
     </a>
     <div id="mode-badge" class="badge badge-paper">PAPER</div>
   </div>
@@ -1229,3 +1370,226 @@ fetch("/api/pnl-chart")
 @app.get("/pnl", response_class=HTMLResponse)
 def pnl_view():
     return PNL_HTML
+
+
+# ── System health page ─────────────────────────────────────────────────────────
+
+SYSTEM_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fortuna — System</title>
+  <link rel="icon" href="/icon.png" type="image/png">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0f1117; color: #e2e8f0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px; padding-bottom: 40px;
+    }
+    header {
+      background: #1a1d2e; padding: 12px 16px;
+      display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 1px solid #2d3148; position: sticky; top: 0; z-index: 10;
+    }
+    .header-brand { display: flex; align-items: center; gap: 8px; }
+    .header-brand svg { width: 28px; height: 29px; }
+    .brand-text { display: flex; flex-direction: column; }
+    .brand-name { font-size: 15px; font-weight: 700; letter-spacing: 2px; background: linear-gradient(180deg,#FFE566,#B8860B); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .brand-sub  { font-size: 9px; letter-spacing: 2px; color: #718096; text-transform: uppercase; }
+    .nav-btn { background: #2d3148; color: #e2e8f0; border: 1px solid #3d4268; border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer; text-decoration: none; }
+    .nav-btn:hover { background: #3d4268; }
+
+    .page-title { padding: 20px 16px 8px; font-size: 18px; font-weight: 700; }
+    .refresh-note { padding: 0 16px 16px; font-size: 12px; color: #718096; }
+
+    .overall-banner {
+      margin: 0 16px 20px; padding: 14px 16px; border-radius: 10px;
+      display: flex; align-items: center; gap: 12px; font-size: 15px; font-weight: 700;
+    }
+    .overall-banner.ok   { background: #1a2e22; border: 1px solid #276749; color: #68d391; }
+    .overall-banner.fail { background: #2d1515; border: 1px solid #9b2c2c; color: #fc8181; }
+    .overall-banner.loading { background: #1a1d2e; border: 1px solid #2d3148; color: #718096; }
+
+    .section { margin: 0 16px 12px; }
+    .check-card {
+      background: #1a1d2e; border: 1px solid #2d3148; border-radius: 10px;
+      margin-bottom: 8px; overflow: hidden;
+    }
+    .check-header {
+      display: flex; align-items: center; gap: 12px;
+      padding: 14px 16px; cursor: pointer; user-select: none;
+    }
+    .check-header:hover { background: #20243a; }
+    .dot {
+      width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0;
+    }
+    .dot.ok   { background: #48bb78; box-shadow: 0 0 6px #48bb78aa; }
+    .dot.fail { background: #fc8181; box-shadow: 0 0 6px #fc8181aa; }
+    .dot.warn { background: #f6ad55; box-shadow: 0 0 6px #f6ad55aa; }
+    .dot.loading { background: #718096; }
+    .check-label { font-weight: 600; font-size: 14px; flex: 1; }
+    .check-detail { font-size: 12px; color: #a0aec0; }
+    .chevron { font-size: 12px; color: #718096; transition: transform 0.2s; }
+    .check-card.open .chevron { transform: rotate(180deg); }
+
+    .check-body { display: none; border-top: 1px solid #2d3148; padding: 12px 16px; }
+    .check-card.open .check-body { display: block; }
+
+    .sub-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 6px 0; border-bottom: 1px solid #2d3148;
+      font-size: 13px;
+    }
+    .sub-row:last-child { border-bottom: none; }
+    .sub-name { color: #a0aec0; }
+    .sub-ok   { color: #68d391; font-weight: 600; }
+    .sub-fail { color: #fc8181; font-weight: 600; }
+    .sub-warn { color: #f6ad55; font-weight: 600; }
+    .sub-detail { font-size: 11px; color: #718096; }
+
+    .checked-at { text-align: center; font-size: 11px; color: #4a5568; padding-top: 24px; }
+  </style>
+</head>
+<body>
+<header>
+  <div class="header-brand">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 420">
+      <defs>
+        <linearGradient id="sg" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#FFE566"/><stop offset="100%" stop-color="#B8860B"/></linearGradient>
+        <filter id="sglow"><feGaussianBlur stdDeviation="4" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      </defs>
+      <polygon points="250,6 425,107 425,309 250,410 75,309 75,107" fill="transparent" stroke="url(#sg)" stroke-width="11" stroke-linejoin="round" filter="url(#sglow)"/>
+      <circle cx="250" cy="208" r="90" fill="#1a1d2e" stroke="url(#sg)" stroke-width="8" filter="url(#sglow)"/>
+      <circle cx="250" cy="208" r="22" fill="#FFD700"/>
+    </svg>
+    <div class="brand-text">
+      <span class="brand-name">FORTUNA</span>
+      <span class="brand-sub">System Health</span>
+    </div>
+  </div>
+  <a href="/" class="nav-btn">&#x2190; Dashboard</a>
+</header>
+
+<div class="page-title">System Status</div>
+<div class="refresh-note" id="refresh-note">Checking...</div>
+
+<div id="overall-banner" class="overall-banner loading">
+  <span id="overall-icon">⏳</span>
+  <span id="overall-text">Loading system status...</span>
+</div>
+
+<div class="section" id="checks-container"></div>
+
+<div class="checked-at" id="checked-at"></div>
+
+<script>
+var EXPAND_ON_FAIL = true;
+
+function dot(ok, warn) {
+  if (ok === null) return '<span class="dot loading"></span>';
+  if (warn)        return '<span class="dot warn"></span>';
+  return ok ? '<span class="dot ok"></span>' : '<span class="dot fail"></span>';
+}
+
+function renderWeex(symbols) {
+  if (!symbols) return '';
+  return Object.entries(symbols).map(function(kv) {
+    var name = kv[0], v = kv[1];
+    return '<div class="sub-row">'
+      + '<span class="sub-name">' + name + '</span>'
+      + '<span class="' + (v.ok ? 'sub-ok' : 'sub-fail') + '">' + (v.ok ? '✓ OK' : '✗ ' + v.detail) + '</span>'
+      + '</div>';
+  }).join('');
+}
+
+function renderModels(models) {
+  if (!models) return '';
+  return Object.entries(models).map(function(kv) {
+    var name = kv[0], v = kv[1];
+    return '<div class="sub-row">'
+      + '<span class="sub-name">' + name + '</span>'
+      + (v.ok
+        ? '<span class="sub-ok">✓ ' + v.size_mb + ' MB</span>'
+        : '<span class="sub-fail">✗ Missing</span>')
+      + '</div>';
+  }).join('');
+}
+
+function renderPositions(positions) {
+  if (!positions || positions.length === 0) return '<div class="sub-row"><span class="sub-detail">No open positions</span></div>';
+  return positions.map(function(p) {
+    return '<div class="sub-row"><span class="sub-name">' + p + '</span><span class="sub-ok">Open</span></div>';
+  }).join('');
+}
+
+function renderCard(key, check) {
+  var isWarn = check.warn || false;
+  var bodyHtml = '';
+
+  if (key === 'weex_api' && check.symbols) bodyHtml = renderWeex(check.symbols);
+  else if (key === 'ml_models' && check.models) bodyHtml = renderModels(check.models);
+  else if (key === 'open_positions') bodyHtml = renderPositions(check.positions || []);
+  else if (check.detail) bodyHtml = '<div class="sub-row"><span class="sub-detail">' + check.detail + '</span></div>';
+
+  var hasBody = bodyHtml.length > 0;
+  var autoOpen = EXPAND_ON_FAIL && !check.ok && hasBody;
+
+  return '<div class="check-card' + (autoOpen ? ' open' : '') + '" id="card-' + key + '">'
+    + '<div class="check-header" onclick="toggleCard(\'' + key + '\')">'
+    + dot(check.ok, isWarn)
+    + '<span class="check-label">' + check.label + '</span>'
+    + '<span class="check-detail">' + (check.detail || '') + '</span>'
+    + (hasBody ? '<span class="chevron">&#9660;</span>' : '')
+    + '</div>'
+    + (hasBody ? '<div class="check-body">' + bodyHtml + '</div>' : '')
+    + '</div>';
+}
+
+function toggleCard(key) {
+  var card = document.getElementById('card-' + key);
+  if (card) card.classList.toggle('open');
+}
+
+function render(data) {
+  var banner = document.getElementById('overall-banner');
+  var icon   = document.getElementById('overall-icon');
+  var text   = document.getElementById('overall-text');
+
+  banner.className = 'overall-banner ' + (data.ok ? 'ok' : 'fail');
+  icon.textContent = data.ok ? '✅' : '⚠️';
+  text.textContent = data.ok ? 'All systems operational' : 'One or more systems need attention';
+
+  var order = ['bot_heartbeat','trading_mode','weex_api','ml_models','trades_file','telegram','open_positions'];
+  var html = '';
+  order.forEach(function(k) {
+    if (data.checks[k]) html += renderCard(k, data.checks[k]);
+  });
+  document.getElementById('checks-container').innerHTML = html;
+
+  var d = new Date(data.checked_at);
+  document.getElementById('checked-at').textContent = 'Last checked: ' + d.toLocaleTimeString();
+  document.getElementById('refresh-note').textContent = 'Auto-refreshes every 30s';
+}
+
+function load() {
+  fetch('/api/system')
+    .then(function(r) { return r.json(); })
+    .then(render)
+    .catch(function(e) {
+      document.getElementById('overall-banner').className = 'overall-banner fail';
+      document.getElementById('overall-text').textContent = 'Could not reach /api/system';
+    });
+}
+
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>"""
+
+
+@app.get("/system", response_class=HTMLResponse)
+def system_view():
+    return SYSTEM_HTML
