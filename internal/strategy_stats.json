@@ -1,13 +1,13 @@
 {
   "BTCUSDT_UMCBL_5m+4h": {
-    "trades": 62,
+    "trades": 63,
     "wins": 19,
-    "losses": 43,
-    "win_rate_pct": 30.6,
-    "avg_confidence": 0.5118,
-    "total_pnl_usdt": -53.2,
-    "avg_pnl_usdt": -0.86,
-    "last_trade": "2026-06-10T13:40:10.405135"
+    "losses": 44,
+    "win_rate_pct": 30.2,
+    "avg_confidence": 0.5096,
+    "total_pnl_usdt": -58.53,
+    "avg_pnl_usdt": -0.93,
+    "last_trade": "2026-06-10T17:40:09.146376"
   },
   "SOLUSDT_UMCBL_5m+4h": {
     "trades": 82,
