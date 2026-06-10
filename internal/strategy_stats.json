@@ -40,13 +40,13 @@
     "last_trade": "2026-06-09T17:25:09.128807"
   },
   "XRPUSDT_UMCBL_5m+4h": {
-    "trades": 4,
-    "wins": 1,
+    "trades": 5,
+    "wins": 2,
     "losses": 3,
-    "win_rate_pct": 25.0,
-    "avg_confidence": 0.3986,
-    "total_pnl_usdt": -8.98,
-    "avg_pnl_usdt": -2.24,
-    "last_trade": "2026-06-10T13:40:09.137363"
+    "win_rate_pct": 40.0,
+    "avg_confidence": 0.4101,
+    "total_pnl_usdt": 0.4,
+    "avg_pnl_usdt": 0.08,
+    "last_trade": "2026-06-10T16:40:10.069995"
   }
 }
