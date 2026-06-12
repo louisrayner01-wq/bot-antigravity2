@@ -1,8 +1,14 @@
 # Live Trades
-_Updated: 2026-06-12 01:25 UTC_
-_Total: 184 trades_
+_Updated: 2026-06-12 01:40 UTC_
+_Total: 185 trades_
 
-**Overall: 65W / 119L  (35% WR)  Total PnL: -87.71 USDT**
+**Overall: 65W / 120L  (35% WR)  Total PnL: -96.33 USDT**
+
+## 2026-06-12  —  1 trades  |  0% WR  |  -8.62 USDT
+
+| Time (UTC) | Slot | Side | Outcome | PnL USDT | PnL % | Equity |
+|------------|------|------|---------|----------|-------|--------|
+| 01:40 | ETHUSDT_UMCBL_5m+4h | LONG | ❌ SL | -8.62 | -1.05% | £19.26 |
 
 ## 2026-06-11  —  6 trades  |  33% WR  |  -5.22 USDT
 
