@@ -211,9 +211,9 @@ class RuleBot:
         )
 
         try:
-            notify_startup(mode_emoji, self.risk.equity, len(self.assets))
-        except Exception:
-            pass
+            notify_startup([a["base"] for a in self.assets], self.risk.equity)
+        except Exception as exc:
+            self.log.debug("notify_startup failed: %s", exc)
 
     # ── Data helpers ─────────────────────────────────────────────────────────
 
@@ -307,10 +307,10 @@ class RuleBot:
                 self.log.warning("place_tpsl failed for %s: %s", signal.symbol, exc)
 
         try:
-            notify_open(signal.symbol, side_word, signal.entry_price,
-                        signal.sl_price, signal.tp_price, qty, leverage)
-        except Exception:
-            pass
+            notify_open(signal.symbol, side_word, "4h",
+                        signal.entry_price, signal.sl_price, signal.tp_price)
+        except Exception as exc:
+            self.log.debug("notify_open failed: %s", exc)
 
     def _exit(self, base: str, exit_price: float, reason: str) -> None:
         pos = self.risk.open_positions.get(base)
@@ -337,10 +337,15 @@ class RuleBot:
                 self.log.debug("fortuna_client post failed: %s", exc)
 
         try:
-            notify_close(trade["pair"], trade["side"], trade["entry_price"],
-                         trade["exit_price"], trade["pnl_usdt"], reason)
-        except Exception:
-            pass
+            notify_close(
+                trade["pair"], trade["side"], "4h",
+                trade["entry_price"], trade["exit_price"],
+                trade["pnl_usdt"], reason,
+                sl=trade.get("stop_loss", 0.0),
+                tp=trade.get("take_profit", 0.0),
+            )
+        except Exception as exc:
+            self.log.debug("notify_close failed: %s", exc)
 
     # ── Dashboard state ──────────────────────────────────────────────────────
 
