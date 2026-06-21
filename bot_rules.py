@@ -20,9 +20,9 @@ This bot is independent from bot.py — it has its own state file
 """
 
 from __future__ import annotations
+import json
 import logging
 import os
-import sys
 import time
 import yaml
 from datetime import datetime, timezone
@@ -38,7 +38,7 @@ from trade_logger    import TradeLogger
 # New rule-based components
 from strategy_rules    import (
     StrategyController, evaluate_signal, compute_daily_btc_bias,
-    Signal, LONG, SHORT, FLAT, normalise_symbol,
+    Signal, LONG,
 )
 from risk_manager_rules import RuleRiskManager, RulePosition
 
@@ -179,9 +179,23 @@ class RuleBot:
                      else self.cfg.get("data", {}).get("data_dir", "/data"),
         )
 
-        # Trade logger reuses the existing CSV format so the dashboard works
+        # Trade logger writes to the same CSV the legacy dashboard reads,
+        # so https://bot-antigravity2-production.up.railway.app/ keeps showing
+        # trades from the running bot.
         trades_path = self.cfg["logging"].get("trades_file", "/data/trades.csv")
-        self.logger = TradeLogger(trades_path.replace("trades.csv", "trades_rules.csv"))
+        self.logger = TradeLogger(trades_path)
+
+        # Dashboard state.json — written after every tick so dashboard.py
+        # (running on the same Railway service) shows the live bot status.
+        # We always write /data/state.json (or the configured base data_dir)
+        # plus a per-user copy when running multi-user.
+        base_data_dir = self.cfg.get("data", {}).get("data_dir", "/data")
+        user_data_dir = os.path.dirname(self.risk._state_path) or base_data_dir
+        self.state_paths: List[str] = []
+        for p in (os.path.join(base_data_dir, "state.json"),
+                  os.path.join(user_data_dir, "state.json")):
+            if p not in self.state_paths:
+                self.state_paths.append(p)
 
         # Last 4h candle timestamp seen per asset — used to gate entry checks
         self._last_4h_ts: Dict[str, pd.Timestamp] = {}
@@ -328,6 +342,51 @@ class RuleBot:
         except Exception:
             pass
 
+    # ── Dashboard state ──────────────────────────────────────────────────────
+
+    def _write_state(self) -> None:
+        """Write current bot state to state.json for dashboard.py to display."""
+        try:
+            positions = {}
+            for base, pos in self.risk.open_positions.items():
+                slot_key = f"{pos.symbol}_4h"   # 4h is the only TF this bot uses
+                positions[slot_key] = {
+                    "symbol":      pos.symbol,
+                    "tf":          "4h",
+                    "side":        pos.side,
+                    "entry_price": pos.entry_price,
+                    "sl":          pos.stop_loss,
+                    "tp":          pos.take_profit,
+                    "tp1_price":   0.0,            # no partial TP in rule-based bot
+                    "tp1_hit":     False,
+                    "qty":         pos.quantity,
+                    "qty_original": pos.quantity,
+                    "leverage":    pos.leverage,
+                    "entry_time":  pos.entry_time,
+                }
+            state = {
+                "updated_at":      utcnow().isoformat(),
+                "paper":           self.paper,
+                "equity":          round(self.risk.equity, 4),
+                "hwm":             round(self.risk.hwm, 4),
+                "initial_capital": self.risk.initial_capital,
+                "max_open":        self.risk.max_concurrent,
+                "positions":       positions,
+                # Extras specific to the rule-based bot — dashboard ignores keys
+                # it doesn't know about
+                "strategy_mode":   self.controller.name,
+                "risk_per_trade":  self.risk.risk_per_trade,
+            }
+            for path in self.state_paths:
+                try:
+                    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+                    with open(path, "w") as f:
+                        json.dump(state, f, indent=2)
+                except Exception as exc:
+                    self.log.debug("could not write %s: %s", path, exc)
+        except Exception as exc:
+            self.log.debug("Could not write state.json: %s", exc)
+
     # ── Tick logic ───────────────────────────────────────────────────────────
 
     def tick(self) -> None:
@@ -399,6 +458,9 @@ class RuleBot:
                 fortuna_client.post_equity(self.user_id, self.risk.equity, self.risk.hwm)
             except Exception:
                 pass
+
+        # 5) state.json → for the dashboard.py at bot-antigravity2-production
+        self._write_state()
 
     # ── Main loop ────────────────────────────────────────────────────────────
 
