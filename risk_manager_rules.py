@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
@@ -90,7 +90,38 @@ class RuleRiskManager:
         self.open_positions: Dict[str, RulePosition] = {}
 
         self._state_path = os.path.join(data_dir, "risk_state_rules.json")
-        self._load_state()
+
+        # ── One-shot reset triggers (set in Railway Variables, then remove) ──
+        # RESET_RULE_STATE=true     → wipe state file, fresh start at initial_capital
+        # RESET_RULE_EQUITY=123.45  → keep open positions, set equity + HWM to this £
+        if os.getenv("RESET_RULE_STATE", "").lower() == "true":
+            try:
+                if os.path.exists(self._state_path):
+                    os.remove(self._state_path)
+                logger.warning(
+                    "⚠️  RESET_RULE_STATE applied — wiped %s. "
+                    "Fresh start at £%.2f. REMOVE this env var from Railway now.",
+                    self._state_path, self.initial_capital,
+                )
+            except Exception as exc:
+                logger.error("RESET_RULE_STATE failed: %s", exc)
+        else:
+            self._load_state()
+
+        eq_override = os.getenv("RESET_RULE_EQUITY")
+        if eq_override:
+            try:
+                v = float(eq_override)
+                self.equity = v
+                self.hwm = v
+                self.day_start_equity = v
+                self._save_state()
+                logger.warning(
+                    "⚠️  RESET_RULE_EQUITY applied — equity/HWM set to £%.2f. "
+                    "REMOVE this env var from Railway now.", v,
+                )
+            except ValueError:
+                logger.error("RESET_RULE_EQUITY value '%s' invalid — ignored", eq_override)
 
     # ── State persistence ────────────────────────────────────────────────────
 
