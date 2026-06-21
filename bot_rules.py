@@ -215,6 +215,15 @@ class RuleBot:
         except Exception as exc:
             self.log.debug("notify_startup failed: %s", exc)
 
+        # Immediate state.json write so the dashboard at
+        # bot-antigravity2-production refreshes the moment the bot starts —
+        # we don't want it stuck on the previous (ML) bot's snapshot for
+        # the entire first 5-minute poll interval.
+        try:
+            self._write_state()
+        except Exception as exc:
+            self.log.debug("initial _write_state failed: %s", exc)
+
     # ── Data helpers ─────────────────────────────────────────────────────────
 
     def fetch_4h(self, symbol: str, limit: int = 120) -> Optional[pd.DataFrame]:
@@ -488,42 +497,73 @@ class RuleBot:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    # Multi-user mode (Fortuna dashboard) if FORTUNA_API_URL is set; else single-user
+    """
+    Entry point. Behaviour matches the legacy multi_runner.py:
+
+      - FORTUNA_API_URL not set        → single-user mode (one bot, env-var keys)
+      - FORTUNA_API_URL set, 0 users   → fall back to single-user mode each cycle
+      - FORTUNA_API_URL set, ≥1 user   → multi-user: one bot per active user
+    """
     api_url = os.environ.get("FORTUNA_API_URL", "")
+
+    # Pure single-user mode (legacy / local dev)
     if not api_url or fortuna_client is None:
         bot = RuleBot()
         bot.run_forever()
         return
 
-    # Multi-user: one tick across all users per cycle
+    # Multi-user with single-user fallback
     cfg = load_config()
     setup_logging(cfg)
     log = logging.getLogger("RuleBot.multi")
-    log.info("📡 Multi-user mode — polling Fortuna for active users")
+    log.info("📡 Multi-user mode — polling Fortuna at %s", api_url)
 
     bots: Dict[str, RuleBot] = {}
+    single_user_bot: Optional[RuleBot] = None
+    poll = int(cfg["strategy_rules"].get("poll_seconds", 300))
+
     while True:
         try:
             users = fortuna_client.get_active_users()
-            log.info("Active users: %d", len(users))
-            for u in users:
-                uid = u.get("user_id")
-                if not uid:
-                    continue
-                user_cfg = fortuna_client.get_user_config(uid) or {}
-                # Rebuild bot if strategy_mode or risk changed
-                key = (uid, user_cfg.get("strategy_mode", ""),
-                       user_cfg.get("risk_per_trade", ""))
-                existing = bots.get(uid)
-                if existing is None or getattr(existing, "_key", None) != key:
-                    bots[uid] = RuleBot(user_id=uid, user_override=user_cfg)
-                    bots[uid]._key = key
-                bots[uid].tick()
+            if users:
+                # Tear down the single-user fallback if we were using it
+                if single_user_bot is not None:
+                    log.info("Active users appeared — leaving single-user fallback")
+                    single_user_bot = None
+                log.info("Active users: %d", len(users))
+                active_ids = {u.get("user_id") for u in users if u.get("user_id")}
+                # Drop bots for users who deactivated
+                for uid in list(bots.keys()):
+                    if uid not in active_ids:
+                        log.info("User %s deactivated — removing bot instance", uid[:8])
+                        bots.pop(uid, None)
+                # Run a tick for each active user
+                for u in users:
+                    uid = u.get("user_id")
+                    if not uid:
+                        continue
+                    user_cfg = fortuna_client.get_user_config(uid) or {}
+                    key = (uid, user_cfg.get("strategy_mode", ""),
+                           user_cfg.get("risk_per_trade", ""))
+                    existing = bots.get(uid)
+                    if existing is None or getattr(existing, "_key", None) != key:
+                        bots[uid] = RuleBot(user_id=uid, user_override=user_cfg)
+                        bots[uid]._key = key
+                    bots[uid].tick()
+            else:
+                # No active users — keep the dashboard alive by running a
+                # single-user bot using env-var creds (or paper-mode defaults).
+                # This matches multi_runner.py's fallback and ensures
+                # state.json keeps updating regardless of Fortuna user state.
+                if single_user_bot is None:
+                    log.info("No active Fortuna users — falling back to single-user mode")
+                    single_user_bot = RuleBot()
+                single_user_bot.tick()
         except KeyboardInterrupt:
             return
         except Exception as exc:
             log.exception("Multi-user loop error: %s", exc)
-        time.sleep(int(cfg["strategy_rules"].get("poll_seconds", 300)))
+        time.sleep(poll)
 
 
 if __name__ == "__main__":
