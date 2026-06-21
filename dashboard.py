@@ -682,6 +682,9 @@ HTML = """<!DOCTYPE html>
         <option value="500">&#xa3;500</option>
         <option value="1000">&#xa3;1,000</option>
         <option value="5000">&#xa3;5,000</option>
+        <option value="10000">&#xa3;10,000</option>
+        <option value="15000">&#xa3;15,000</option>
+        <option value="20000">&#xa3;20,000</option>
       </select>
     </div>
     <a href="/pnl" style="text-decoration:none;">
