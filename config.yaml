@@ -219,6 +219,33 @@ logging:
   level:       "INFO"
   m2_trades_file: "/Users/Louis/bot-fvg/data/trades_m2.csv"
 
+# ============================================================
+#  Rule-based strategies — used by bot_rules.py (NOT bot.py)
+# ============================================================
+#
+# Switch the Procfile worker line to `python bot_rules.py` to activate.
+# bot.py is unchanged and remains the rollback option.
+#
+# strategy_mode:    conservative | balanced | aggressive
+#                   - conservative: max 1 position, priority ETH→SOL→BTC
+#                   - balanced    : max 2 positions, priority SOL→ETH→BTC
+#                   - aggressive  : take all signals, up to 3 positions
+#
+# risk_per_trade:   0.005–0.02  (0.5% to 2% of CURRENT equity per trade)
+#                   Default 0.01 (1%). Bot clamps anything outside the range.
+strategy_rules:
+  strategy_mode:     "conservative"
+  risk_per_trade:    0.01            # 1% — recommended start, scale to 2% after live validation
+  max_leverage:      10              # hard cap, used only when liq distance < SL distance
+  daily_loss_pct:    0.05            # circuit: pause new entries if down >5% on the day
+  hwm_drawdown_pct:  0.25            # circuit: pause new entries if down >25% from HWM
+  poll_seconds:      300             # 5-minute tick (matches signal cadence on 4h)
+  min_holding_bars:  1
+  assets:
+    - {base: "BTC", symbol: "BTCUSDT_UMCBL"}
+    - {base: "ETH", symbol: "ETHUSDT_UMCBL"}
+    - {base: "SOL", symbol: "SOLUSDT_UMCBL"}
+
 # ── Data collection + analysis ──────────────────────────────────────────────
 data:
   # Railway persistent volume mount path — set this up in Railway dashboard
