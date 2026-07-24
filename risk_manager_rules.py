@@ -113,15 +113,37 @@ class RuleRiskManager:
             try:
                 v = float(eq_override)
                 self.equity = v
-                self.hwm = v
+                # Preserve HWM if the new equity is lower than the historic peak —
+                # never clobber the drawdown-tracking record downwards.
+                if v > self.hwm:
+                    self.hwm = v
                 self.day_start_equity = v
                 self._save_state()
                 logger.warning(
-                    "⚠️  RESET_RULE_EQUITY applied — equity/HWM set to £%.2f. "
-                    "REMOVE this env var from Railway now.", v,
+                    "⚠️  RESET_RULE_EQUITY applied — equity=£%.2f HWM=£%.2f. "
+                    "REMOVE this env var from Railway now.", self.equity, self.hwm,
                 )
             except ValueError:
                 logger.error("RESET_RULE_EQUITY value '%s' invalid — ignored", eq_override)
+
+        # ── One-shot day rollover (no equity/HWM change) ──────────────────
+        # Sets day_start_equity = current equity and self.today = today.
+        # Use this to clear a stuck daily-loss circuit without touching equity/HWM.
+        if os.getenv("RESET_DAY_ROLLOVER", "").lower() == "true":
+            try:
+                prev_dse = self.day_start_equity
+                prev_today = self.today
+                self.day_start_equity = self.equity
+                self.today = datetime.now(timezone.utc).date()
+                self._save_state()
+                logger.warning(
+                    "⚠️  RESET_DAY_ROLLOVER applied — day_start_equity %.2f → %.2f, "
+                    "today %s → %s. REMOVE this env var from Railway now.",
+                    prev_dse, self.day_start_equity,
+                    prev_today.isoformat(), self.today.isoformat(),
+                )
+            except Exception as exc:
+                logger.error("RESET_DAY_ROLLOVER failed: %s", exc)
 
     # ── State persistence ────────────────────────────────────────────────────
 
@@ -169,7 +191,24 @@ class RuleRiskManager:
             self.hwm = self.equity
         self._save_state()
 
+    def _rollover_day_if_needed(self) -> None:
+        """
+        Ensure day_start_equity reflects today's opening equity.
+        Called from daily_loss_pct_now() so the daily circuit never gets stuck
+        on a stale start-of-day baseline (e.g. when single-user fallback mode
+        means update_equity() is never called by the Fortuna heartbeat).
+        """
+        today = datetime.now(timezone.utc).date()
+        if today != self.today:
+            logger.info("Daily rollover: day_start_equity %.2f → %.2f  (today %s → %s)",
+                        self.day_start_equity, self.equity,
+                        self.today.isoformat(), today.isoformat())
+            self.day_start_equity = self.equity
+            self.today = today
+            self._save_state()
+
     def daily_loss_pct_now(self) -> float:
+        self._rollover_day_if_needed()
         if self.day_start_equity <= 0:
             return 0.0
         return max(0.0, (self.day_start_equity - self.equity) / self.day_start_equity)
