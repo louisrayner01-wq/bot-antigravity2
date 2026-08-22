@@ -13,7 +13,7 @@ Run with: python portfolio_bot.py
 Environment variables (Railway):
   FORTUNA_API_URL            — API base URL for multi-user mode
   BOT_ENGINE_SECRET          — shared secret with the API
-  PORTFOLIO_POLL_SECONDS     — override the default 15 min tick cadence
+  PORTFOLIO_POLL_SECONDS     — override the default 5 min tick cadence
   PORTFOLIO_PAPER_STATE_DIR  — where per-user portfolio state files go
                                (default: ./portfolio_state)
 """

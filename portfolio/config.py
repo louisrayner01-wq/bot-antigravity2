@@ -35,10 +35,12 @@ BIAS_TERCILE_WINDOW       = 90            # rolling 90d for bias state
 ENTRY_TERCILE_WINDOW      = 60            # rolling 60-bar for entry signal
 
 # ── Bar cadence ───────────────────────────────────────────────────────────────
-# Portfolio ticks are anchored to the 4h bar close, so every 4h wall-clock.
-# We poll a bit more often (default 15 min) so newly-closed bars are picked
-# up quickly.
-DEFAULT_POLL_SECONDS      = 900           # 15 minutes
+# All 5 sub-strategies use 4h entry / 1d bias, so entry decisions can only
+# change on 4h bar close. Between bars, only position management (SL/TP
+# checks against the currently-forming 4h bar's high/low) benefits from
+# faster ticks. 5 min matches Strat 1 and keeps SL response tight without
+# adding meaningful load (≈48 candle fetches/hr across 4 assets).
+DEFAULT_POLL_SECONDS      = 300           # 5 minutes
 
 
 @dataclass(frozen=True)
