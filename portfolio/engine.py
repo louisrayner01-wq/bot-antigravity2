@@ -76,10 +76,11 @@ class ClosedTrade:
 
 @dataclass
 class EngineState:
-    equity:        float
-    hwm:           float
-    halted:        bool = False        # true once circuit breaker fires
-    positions:     Dict[str, dict] = field(default_factory=dict)   # slot_key -> Position.__dict__
+    equity:          float
+    hwm:             float
+    initial_capital: float = 0.0        # locked at first init; used for PnL %
+    halted:          bool  = False      # true once circuit breaker fires
+    positions:       Dict[str, dict] = field(default_factory=dict)   # slot_key -> Position.__dict__
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), default=str, indent=2)
@@ -87,9 +88,13 @@ class EngineState:
     @classmethod
     def from_json(cls, raw: str) -> "EngineState":
         d = json.loads(raw)
+        equity = float(d["equity"])
         return cls(
-            equity=float(d["equity"]),
+            equity=equity,
             hwm=float(d["hwm"]),
+            # Legacy state files (pre initial_capital) fall back to equity so
+            # PnL % starts at 0% rather than blowing up on a missing baseline.
+            initial_capital=float(d.get("initial_capital") or equity),
             halted=bool(d.get("halted", False)),
             positions=d.get("positions", {}),
         )
@@ -178,10 +183,19 @@ class PortfolioEngine:
 
         if self.state_path.exists():
             self.state = EngineState.from_json(self.state_path.read_text())
+            # Backfill initial_capital for pre-existing state files that predate
+            # this field. We can't recover the true starting equity from disk,
+            # so we treat the current equity as the baseline and go from here.
+            if not self.state.initial_capital:
+                self.state.initial_capital = self.state.equity
             logger.info("[%s] Restored portfolio state: equity=%.2f positions=%d",
                         user_id[:8], self.state.equity, len(self.state.positions))
         else:
-            self.state = EngineState(equity=starting_equity, hwm=starting_equity)
+            self.state = EngineState(
+                equity=starting_equity,
+                hwm=starting_equity,
+                initial_capital=starting_equity,
+            )
 
         self._closed_trades_this_tick: List[ClosedTrade] = []
 

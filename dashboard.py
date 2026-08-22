@@ -69,11 +69,16 @@ def _aggregate_portfolio_state() -> dict:
         except Exception:
             continue
 
-        total_equity += float(s.get("equity") or 0.0)
-        total_hwm    += float(s.get("hwm")    or 0.0)
-        # Starting capital isn't tracked in engine state; use HWM as a fallback
-        # baseline so PnL % can still render. Refine later if we persist it.
-        total_start  += float(s.get("hwm") or s.get("equity") or 0.0)
+        equity = float(s.get("equity") or 0.0)
+        hwm    = float(s.get("hwm")    or 0.0)
+        # initial_capital is persisted by portfolio_bot.py from v2 onward.
+        # Legacy files fall back to equity so PnL renders as 0% instead of
+        # blowing up on a missing baseline.
+        start  = float(s.get("initial_capital") or equity)
+
+        total_equity += equity
+        total_hwm    += hwm
+        total_start  += start
         any_halted = any_halted or bool(s.get("halted"))
 
         mtime = os.path.getmtime(path)
@@ -193,11 +198,17 @@ def serve_manifest():
 
 # ── API endpoints ──────────────────────────────────────────────────────────────
 
+def _trades_csv_for_family(family: str) -> str:
+    """Route to the CSV that backs the given strategy family."""
+    return PORTFOLIO_TRADES_FILE if family.lower() == PORTFOLIO else TRADES_FILE
+
+
 @app.get("/api/pnl-chart")
-def get_pnl_chart():
+def get_pnl_chart(family: str = Query(STRAT_1)):
     """Aggregate trades CSV into daily / weekly / monthly PnL and equity series."""
     from collections import defaultdict
-    if not os.path.exists(TRADES_FILE):
+    path = _trades_csv_for_family(family)
+    if not os.path.exists(path):
         return {"daily": [], "weekly": [], "monthly": [], "equity_series": []}
 
     daily   = defaultdict(lambda: {"pnl": 0.0, "trades": 0})
@@ -205,7 +216,7 @@ def get_pnl_chart():
     monthly = defaultdict(lambda: {"pnl": 0.0, "trades": 0})
     equity_series = []
 
-    with open(TRADES_FILE, newline="") as f:
+    with open(path, newline="") as f:
         for row in csv.DictReader(f):
             ts  = row.get("timestamp", "")[:10]
             if not ts:
@@ -226,6 +237,9 @@ def get_pnl_chart():
             monthly[mon_key]["pnl"]    += pnl
             monthly[mon_key]["trades"] += 1
 
+            # equity_after only exists in the Strat 1 CSV; portfolio_bot writes
+            # equity to state.json instead. Missing/blank is fine — that curve
+            # just won't render for portfolio family.
             eq = float(row.get("equity_after", 0) or 0)
             if eq:
                 equity_series.append({"date": ts, "equity": round(eq, 2)})
@@ -262,12 +276,13 @@ def download_models():
     )
 
 @app.get("/api/calendar")
-def get_calendar():
+def get_calendar(family: str = Query(STRAT_1)):
     """Return daily PnL summary grouped by date for the calendar view."""
-    if not os.path.exists(TRADES_FILE):
+    path = _trades_csv_for_family(family)
+    if not os.path.exists(path):
         return {}
     days = {}
-    with open(TRADES_FILE, newline="") as f:
+    with open(path, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
             ts = row.get("timestamp", "")[:10]  # YYYY-MM-DD
@@ -623,7 +638,11 @@ function onAccountChange() {
 
 function onFamilyChange() {
   try { localStorage.setItem("dashboard_family", currentFamily()); } catch(e) {}
-  // Full refresh so every panel repaints against the selected family's data.
+  // Clear all previous-family data before refetching so nothing lingers.
+  _rawState = null;
+  _rawTrades = [];
+  // Weekly PnL lives in an inline script further down — call it if defined.
+  if (typeof loadWeeklyPnl === "function") loadWeeklyPnl();
   refresh();
 }
 
@@ -944,23 +963,31 @@ HTML = """<!DOCTYPE html>
   }
 
   function loadWeeklyPnl() {
-    fetch("/api/calendar").then(function(r) { return r.json(); }).then(function(days) {
-      var thisWeek = getISOWeek(new Date());
-      var lastWeekDate = new Date(); lastWeekDate.setDate(lastWeekDate.getDate() - 7);
-      var lastWeek = getISOWeek(lastWeekDate);
+    // Reset instantly so the previous family's numbers don't linger while the
+    // new fetch is in flight.
+    _rawWeekly = { tw: { pnl: 0, trades: 0 }, lw: { pnl: 0, trades: 0 } };
+    renderWeeklyPnl();
 
-      var tw = { pnl: 0, trades: 0 };
-      var lw = { pnl: 0, trades: 0 };
+    var fam = (typeof currentFamily === "function") ? currentFamily() : "strat_1";
+    fetch("/api/calendar?family=" + encodeURIComponent(fam))
+      .then(function(r) { return r.json(); })
+      .then(function(days) {
+        var thisWeek = getISOWeek(new Date());
+        var lastWeekDate = new Date(); lastWeekDate.setDate(lastWeekDate.getDate() - 7);
+        var lastWeek = getISOWeek(lastWeekDate);
 
-      Object.keys(days).forEach(function(date) {
-        var w = getISOWeek(new Date(date));
-        if (w === thisWeek) { tw.pnl += days[date].pnl; tw.trades += days[date].trades; }
-        if (w === lastWeek) { lw.pnl += days[date].pnl; lw.trades += days[date].trades; }
+        var tw = { pnl: 0, trades: 0 };
+        var lw = { pnl: 0, trades: 0 };
+
+        Object.keys(days).forEach(function(date) {
+          var w = getISOWeek(new Date(date));
+          if (w === thisWeek) { tw.pnl += days[date].pnl; tw.trades += days[date].trades; }
+          if (w === lastWeek) { lw.pnl += days[date].pnl; lw.trades += days[date].trades; }
+        });
+
+        _rawWeekly = { tw: tw, lw: lw };
+        renderWeeklyPnl();
       });
-
-      _rawWeekly = { tw: tw, lw: lw };
-      renderWeeklyPnl();
-    });
   }
 
   loadWeeklyPnl();
