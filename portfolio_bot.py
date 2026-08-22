@@ -249,38 +249,47 @@ def main() -> None:
             eng.risk_per_trade = risk
         return eng
 
+    def local_tick():
+        """Fallback single-user tick — mirrors bot_rules.py behaviour when
+        no active Fortuna users exist. Keeps the dashboard populated so we
+        can see the strategy scanning locally."""
+        uid = os.environ.get("LOCAL_USER_ID", "local")
+        cap = float(os.environ.get("LOCAL_CAPITAL", DEFAULT_STARTING_EQUITY))
+        risk = float(os.environ.get("LOCAL_RISK", DEFAULT_RISK_PER_TRADE))
+        eng = get_engine(uid, cap, risk)
+        run_single_user_tick(eng, log)
+
     while True:
         try:
+            users: list = []
             if api_url and fortuna_client is not None:
-                users = fortuna_client.get_active_users(strategy_family=FAMILY)
-                if not users:
-                    log.info("No active portfolio users — sleeping")
-                else:
-                    log.info("Active portfolio users: %d", len(users))
-                    for u in users:
-                        uid  = u.get("user_id")
-                        cap  = float(u.get("capital") or DEFAULT_STARTING_EQUITY)
-                        risk = float(u.get("risk_per_trade") or DEFAULT_RISK_PER_TRADE)
-                        if not uid:
-                            continue
-                        eng = get_engine(uid, cap, risk)
-                        try:
-                            run_single_user_tick(eng, log)
-                        except Exception as exc:
-                            log.exception("[%s] tick error: %s", uid[:8], exc)
-                    # Drop engines whose users are no longer active
-                    active_ids = {u.get("user_id") for u in users}
-                    for uid in list(engines.keys()):
-                        if uid not in active_ids:
-                            log.info("[%s] user inactive — dropping engine", uid[:8])
-                            engines.pop(uid, None)
+                users = fortuna_client.get_active_users(strategy_family=FAMILY) or []
+
+            if users:
+                log.info("Active portfolio users: %d", len(users))
+                for u in users:
+                    uid  = u.get("user_id")
+                    cap  = float(u.get("capital") or DEFAULT_STARTING_EQUITY)
+                    risk = float(u.get("risk_per_trade") or DEFAULT_RISK_PER_TRADE)
+                    if not uid:
+                        continue
+                    eng = get_engine(uid, cap, risk)
+                    try:
+                        run_single_user_tick(eng, log)
+                    except Exception as exc:
+                        log.exception("[%s] tick error: %s", uid[:8], exc)
+                # Drop engines whose users are no longer active
+                active_ids = {u.get("user_id") for u in users}
+                for uid in list(engines.keys()):
+                    if uid not in active_ids and uid != "local":
+                        log.info("[%s] user inactive — dropping engine", uid[:8])
+                        engines.pop(uid, None)
             else:
-                # Local single-user mode: use env-var settings.
-                uid = os.environ.get("LOCAL_USER_ID", "local")
-                cap = float(os.environ.get("LOCAL_CAPITAL", DEFAULT_STARTING_EQUITY))
-                risk = float(os.environ.get("LOCAL_RISK", DEFAULT_RISK_PER_TRADE))
-                eng = get_engine(uid, cap, risk)
-                run_single_user_tick(eng, log)
+                # No active portfolio users (or Fortuna unreachable) — fall
+                # back to a local single-user tick so the bot keeps scanning
+                # and the dashboard has data to show.
+                log.info("No active portfolio users — running local fallback tick")
+                local_tick()
         except KeyboardInterrupt:
             log.info("Interrupted — exiting")
             return
