@@ -12,6 +12,7 @@ Start with: uvicorn dashboard:app --host 0.0.0.0 --port $PORT
 """
 
 import csv
+import glob
 import io
 import json
 import os
@@ -19,7 +20,7 @@ import time
 import zipfile
 from datetime import datetime, timezone
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from PIL import Image, ImageDraw
 
@@ -27,6 +28,106 @@ app = FastAPI()
 
 STATE_FILE  = os.environ.get("STATE_FILE",  "/data/state.json")
 TRADES_FILE = os.environ.get("TRADES_FILE", "/data/trades.csv")
+
+# Portfolio-family (Portfolio v1) data — written by portfolio_bot.py.
+# Each active user has their own state file; trades are appended to a
+# single CSV keyed by user_id. Paths mirror what portfolio_bot writes.
+PORTFOLIO_STATE_DIR    = os.environ.get(
+    "PORTFOLIO_PAPER_STATE_DIR",
+    "/data/portfolio_state" if os.path.isdir("/data") else "./portfolio_state",
+)
+PORTFOLIO_TRADES_FILE  = os.environ.get(
+    "PORTFOLIO_TRADES_FILE",
+    "/data/portfolio_trades.csv" if os.path.isdir("/data") else "./portfolio_trades.csv",
+)
+
+STRAT_1  = "strat_1"
+PORTFOLIO = "portfolio"
+
+
+def _aggregate_portfolio_state() -> dict:
+    """Read every portfolio_<user>.json and roll them up into a single
+    dashboard-compatible state dict. In single-user mode this is just one file;
+    in multi-user mode we sum equity/HWM and merge positions across users.
+    Returns a dict shaped like the Strat 1 state.json so the same UI renders.
+    """
+    files = sorted(glob.glob(os.path.join(PORTFOLIO_STATE_DIR, "portfolio_*.json")))
+    if not files:
+        return {}
+
+    total_equity = 0.0
+    total_hwm    = 0.0
+    total_start  = 0.0
+    positions: dict = {}
+    latest_mtime = 0.0
+    any_halted = False
+
+    for path in files:
+        try:
+            with open(path) as f:
+                s = json.load(f)
+        except Exception:
+            continue
+
+        total_equity += float(s.get("equity") or 0.0)
+        total_hwm    += float(s.get("hwm")    or 0.0)
+        # Starting capital isn't tracked in engine state; use HWM as a fallback
+        # baseline so PnL % can still render. Refine later if we persist it.
+        total_start  += float(s.get("hwm") or s.get("equity") or 0.0)
+        any_halted = any_halted or bool(s.get("halted"))
+
+        mtime = os.path.getmtime(path)
+        if mtime > latest_mtime:
+            latest_mtime = mtime
+
+        # Merge positions — prefix slot key with user-short so multi-user
+        # rollup doesn't collide on shared (strategy, asset) slots.
+        user_short = os.path.basename(path).replace("portfolio_", "").replace(".json", "")[:8]
+        for slot, pos in (s.get("positions") or {}).items():
+            key = f"{user_short}::{slot}" if len(files) > 1 else slot
+            positions[key] = {
+                "symbol":      pos.get("asset"),
+                "tf":          "4h",
+                "side":        "long" if pos.get("side", 0) > 0 else "short",
+                "entry_price": pos.get("entry_price"),
+                "sl":          pos.get("stop_loss"),
+                "tp":          pos.get("take_profit"),
+                "qty":         pos.get("quantity"),
+                "leverage":    pos.get("leverage"),
+                "entry_time":  pos.get("entry_ts"),
+            }
+
+    return {
+        "equity":          total_equity,
+        "hwm":             total_hwm,
+        "initial_capital": total_start if total_start > 0 else total_equity,
+        "positions":       positions,
+        "max_open":        len(positions) or 5,
+        "paper":           True,
+        "halted":          any_halted,
+        "updated_at":      datetime.fromtimestamp(latest_mtime, tz=timezone.utc).isoformat() if latest_mtime else "",
+    }
+
+
+def _read_portfolio_trades() -> list:
+    """Load the portfolio trades CSV as a list of dicts shaped for the dashboard."""
+    if not os.path.exists(PORTFOLIO_TRADES_FILE):
+        return []
+    rows = []
+    try:
+        with open(PORTFOLIO_TRADES_FILE, newline="") as f:
+            for row in csv.DictReader(f):
+                rows.append({
+                    "pair":         row.get("pair"),
+                    "side":         row.get("side"),
+                    "pnl_pct":      float(row.get("pnl_pct") or 0) * 100.0,
+                    "pnl_usdt":     row.get("pnl_usdt"),
+                    "exit_reason":  row.get("exit_reason"),
+                    "timestamp":    row.get("timestamp"),
+                })
+    except Exception:
+        return []
+    return list(reversed(rows[-100:]))
 
 
 def _make_logo_png(size: int = 512) -> bytes:
@@ -181,7 +282,17 @@ def get_calendar():
 
 
 @app.get("/api/state")
-def get_state():
+def get_state(family: str = Query(STRAT_1)):
+    fam = family.lower()
+    if fam == PORTFOLIO:
+        state = _aggregate_portfolio_state()
+        if not state:
+            return JSONResponse(
+                {"error": "Portfolio state not found — portfolio bot may still be initialising."},
+                status_code=503,
+            )
+        return state
+    # Default: Strat 1 (original behavior)
     if not os.path.exists(STATE_FILE):
         return JSONResponse(
             {"error": "State file not found — bot may still be initialising."},
@@ -192,7 +303,10 @@ def get_state():
 
 
 @app.get("/api/trades")
-def get_trades():
+def get_trades(family: str = Query(STRAT_1)):
+    fam = family.lower()
+    if fam == PORTFOLIO:
+        return _read_portfolio_trades()
     if not os.path.exists(TRADES_FILE):
         return []
     trades = []
@@ -507,11 +621,26 @@ function onAccountChange() {
   renderWeeklyPnl();
 }
 
+function onFamilyChange() {
+  try { localStorage.setItem("dashboard_family", currentFamily()); } catch(e) {}
+  // Full refresh so every panel repaints against the selected family's data.
+  refresh();
+}
+
+function currentFamily() {
+  var s = document.getElementById("family-select");
+  return (s && s.value) || "strat_1";
+}
+
 async function loadState() {
   try {
-    var r = await fetch("/api/state");
+    var r = await fetch("/api/state?family=" + encodeURIComponent(currentFamily()));
     if (!r.ok) {
-      el("updated").textContent = "Bot initialising\u2026";
+      el("updated").textContent = (currentFamily() === "portfolio")
+        ? "Portfolio bot initialising\u2026"
+        : "Bot initialising\u2026";
+      _rawState = null;
+      renderState();
       return;
     }
     _rawState = await r.json();
@@ -524,7 +653,7 @@ async function loadState() {
 
 async function loadTrades() {
   try {
-    var r      = await fetch("/api/trades");
+    var r      = await fetch("/api/trades?family=" + encodeURIComponent(currentFamily()));
     _rawTrades = await r.json();
     _scaleFactor = getScaleFactor();
     renderTrades();
@@ -536,6 +665,15 @@ async function loadTrades() {
 async function refresh() {
   await Promise.all([loadState(), loadTrades()]);
 }
+
+// Restore last-selected family from localStorage before the first fetch.
+try {
+  var savedFamily = localStorage.getItem("dashboard_family");
+  var fs = document.getElementById("family-select");
+  if (savedFamily && fs && (savedFamily === "strat_1" || savedFamily === "portfolio")) {
+    fs.value = savedFamily;
+  }
+} catch(e) {}
 
 refresh();
 setInterval(refresh, 30000);
@@ -675,6 +813,13 @@ HTML = """<!DOCTYPE html>
     </div>
   </div>
   <div class="header-right">
+    <div>
+      <div class="acct-label">Strategy</div>
+      <select class="acct-select" id="family-select" onchange="onFamilyChange()">
+        <option value="strat_1">Strat 1</option>
+        <option value="portfolio">Portfolio Strategy</option>
+      </select>
+    </div>
     <div>
       <div class="acct-label">Account size</div>
       <select class="acct-select" id="acct-select" onchange="onAccountChange()">

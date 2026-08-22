@@ -19,6 +19,7 @@ Environment variables (Railway):
 """
 
 from __future__ import annotations
+import csv
 import logging
 import os
 import time
@@ -46,6 +47,49 @@ except Exception:
 
 
 FAMILY = "portfolio"
+
+# CSV log of closed portfolio trades. Read by dashboard.py's /api/trades
+# endpoint when the user selects the Portfolio family in the family
+# dropdown. Path is env-tunable so Railway can point it at /data.
+PORTFOLIO_TRADES_FILE = os.environ.get(
+    "PORTFOLIO_TRADES_FILE",
+    "/data/portfolio_trades.csv" if os.path.isdir("/data") else "./portfolio_trades.csv",
+)
+
+_TRADE_CSV_COLUMNS = [
+    "timestamp", "user_id", "strategy_key", "pair", "side",
+    "entry_price", "exit_price", "quantity", "leverage",
+    "pnl_pct", "pnl_usdt", "candles_held", "exit_reason",
+]
+
+
+def _append_trade_row(user_id: str, trade) -> None:
+    """Append one closed trade to the portfolio trades CSV so dashboard can display it."""
+    path = Path(PORTFOLIO_TRADES_FILE)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_header = not path.exists()
+        with path.open("a", newline="") as f:
+            w = csv.writer(f)
+            if write_header:
+                w.writerow(_TRADE_CSV_COLUMNS)
+            w.writerow([
+                trade.exit_ts,
+                user_id,
+                trade.strategy_key,
+                trade.asset,
+                "long" if trade.side > 0 else "short",
+                f"{trade.entry_price:.8f}",
+                f"{trade.exit_price:.8f}",
+                f"{abs(trade.quantity):.8f}",
+                trade.leverage,
+                f"{trade.pnl_pct:.6f}",
+                f"{trade.pnl_usdt:.6f}",
+                trade.bars_held,
+                trade.exit_reason,
+            ])
+    except Exception as exc:
+        logging.getLogger("portfolio_bot").warning("trade CSV append failed: %s", exc)
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -145,6 +189,7 @@ def build_weex_client() -> WeexClient:
 def run_single_user_tick(engine: PortfolioEngine, log: logging.Logger) -> None:
     closed = engine.tick()
     for tr in closed:
+        _append_trade_row(engine.user_id, tr)
         _post_closed_trade(engine.user_id, tr, engine.state.equity, engine.state.hwm)
         try:
             notify_close(
