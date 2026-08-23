@@ -81,6 +81,10 @@ class EngineState:
     initial_capital: float = 0.0        # locked at first init; used for PnL %
     halted:          bool  = False      # true once circuit breaker fires
     positions:       Dict[str, dict] = field(default_factory=dict)   # slot_key -> Position.__dict__
+    # slot_key -> ISO timestamp of the 4h bar we last opened on. Prevents
+    # whipsaw re-entry when a position closes (SL or time exit) inside the
+    # same bar where the confluence originally fired.
+    last_entry_bar_ts: Dict[str, str] = field(default_factory=dict)
     # Live snapshot of firing conditions per (strategy_key, asset) — populated
     # each tick and read by the /strategies dashboard page. Not part of the
     # trading logic; safe to be empty on legacy state files.
@@ -101,6 +105,7 @@ class EngineState:
             initial_capital=float(d.get("initial_capital") or equity),
             halted=bool(d.get("halted", False)),
             positions=d.get("positions", {}),
+            last_entry_bar_ts=d.get("last_entry_bar_ts", {}),
             signals=d.get("signals", {}),
         )
 
@@ -421,8 +426,20 @@ class PortfolioEngine:
             exit_reason: Optional[str] = None
             exit_price = price
 
-            # Bump bars_held on new bar
-            pos.bars_held += 1
+            # Bars-held is a *4h bar* count, not a tick count. Compute from
+            # entry timestamp so it stays correct regardless of poll cadence.
+            # (Old code did `pos.bars_held += 1` per tick, which force-exited
+            # every position after 12 ticks = 60 min instead of 12 × 4h = 48h.)
+            try:
+                entry_dt = datetime.fromisoformat(pos.entry_ts)
+                if entry_dt.tzinfo is None:
+                    entry_dt = entry_dt.replace(tzinfo=timezone.utc)
+                elapsed_hours = (datetime.now(timezone.utc) - entry_dt).total_seconds() / 3600.0
+                pos.bars_held = max(0, int(elapsed_hours // 4))
+            except Exception:
+                # Never let a bad timestamp block position management — keep
+                # the previous value and let SL/TP checks run.
+                pass
 
             # SL/TP checks — use bar's extreme against direction
             if pos.side == LONG:
@@ -539,6 +556,17 @@ class PortfolioEngine:
             if latest_sig == 0.0:
                 continue
 
+            # Whipsaw guard: don't re-open on the same 4h bar we just closed
+            # a position on. Without this, an SL hit mid-bar would immediately
+            # re-fire on the next 5-min tick (fire signal is still non-zero
+            # for that bar) and cycle losses. Only allow a fresh entry when
+            # the latest candle timestamp is newer than the last entry we
+            # took for this (strategy, asset) slot.
+            latest_bar_ts = sig.index[-1].isoformat() if len(sig) else ""
+            last_ts = self.state.last_entry_bar_ts.get(slot_key, "")
+            if latest_bar_ts and last_ts and latest_bar_ts <= last_ts:
+                continue
+
             side = LONG if latest_sig > 0 else SHORT
             price = float(candles_4h["close"].iloc[-1])
             atr_series = atr(candles_4h, period=ATR_PERIOD)
@@ -579,6 +607,10 @@ class PortfolioEngine:
                 entry_atr=atr_now,
             )
             self._store_position(pos)
+            # Remember the bar we opened on so we can block same-bar re-entry
+            # after any subsequent SL/TP/time exit.
+            if latest_bar_ts:
+                self.state.last_entry_bar_ts[slot_key] = latest_bar_ts
             # Live-mode: fire the real WEEX order + exchange-side TP/SL. In
             # paper mode this is a no-op so the local Position is the sole
             # record of the trade.
