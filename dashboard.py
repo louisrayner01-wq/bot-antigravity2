@@ -1949,15 +1949,34 @@ STRATEGIES_HTML = r"""<!DOCTYPE html>
 
     .bar-wrap {
       margin: 6px 0 10px; position: relative;
-      background: #262a3f; height: 12px; border-radius: 6px; overflow: hidden;
+      background: #262a3f; height: 18px; border-radius: 6px; overflow: hidden;
     }
-    .bar-fill {
-      position: absolute; top: 0; bottom: 0; background: #4a5568;
+    /* Three tercile zones — coloured backgrounds so the whole bar is always
+       visible regardless of where the value sits. */
+    .bar-zone {
+      position: absolute; top: 0; bottom: 0;
     }
-    .bar-fill.long  { background: linear-gradient(90deg, #48bb78, #68d391); }
-    .bar-fill.short { background: linear-gradient(90deg, #fc8181, #f56565); }
+    .bar-zone.short-zone { background: rgba(252, 129, 129, 0.22); }
+    .bar-zone.mid-zone   { background: rgba(160, 174, 192, 0.12); }
+    .bar-zone.long-zone  { background: rgba(72, 187, 120, 0.22); }
+    /* Marker line + arrow showing the current value position. */
+    .bar-marker {
+      position: absolute; top: -3px; bottom: -3px; width: 3px;
+      background: #FFD700; box-shadow: 0 0 6px rgba(255, 215, 0, 0.6);
+      z-index: 2;
+    }
+    .bar-marker-arrow {
+      position: absolute; top: -6px;
+      width: 0; height: 0;
+      border-left: 5px solid transparent;
+      border-right: 5px solid transparent;
+      border-top: 6px solid #FFD700;
+      transform: translateX(-50%);
+      z-index: 2;
+    }
+    /* Fine tick marks at the exact tercile boundaries. */
     .bar-tick {
-      position: absolute; top: -2px; bottom: -2px; width: 2px; background: #FFD700;
+      position: absolute; top: 0; bottom: 0; width: 1px; background: rgba(255,255,255,0.25);
     }
     .bar-legend {
       display: flex; justify-content: space-between; font-size: 10px;
@@ -2163,33 +2182,38 @@ function renderStrat1(state) {
 // ─── Portfolio rendering ──────────────────────────────────────────────────────
 
 function terciléBar(value, lo, hi, side) {
-  // Render a bar with the current signal value marked against the tercile
-  // bounds. The bar fills toward whichever side (long/short) the value points.
-  if (value === null || lo === null || hi === null) {
-    return '<div class="bar-wrap"><div class="bar-fill" style="width:0%"></div></div>'
+  // Gauge with 3 coloured tercile zones (short=red, mid=grey, long=green)
+  // and a bright marker at the value's position. Always visible — no more
+  // "empty bar" when the value sits near the range edge.
+  if (value === null || value === undefined || lo === null || hi === null) {
+    return '<div class="bar-wrap"><div class="bar-zone mid-zone" style="left:0;width:100%"></div></div>'
          + '<div class="bar-legend"><span>—</span><span>insufficient data</span><span>—</span></div>';
   }
-  // Extend the visual range slightly beyond lo/hi so we don't clip.
   var span = Math.max(1e-9, hi - lo);
-  var vmin = lo - span * 0.5;
-  var vmax = hi + span * 0.5;
-  var pctVal = Math.max(0, Math.min(100, (value - vmin) / (vmax - vmin) * 100));
-  var pctLo  = (lo - vmin) / (vmax - vmin) * 100;
-  var pctHi  = (hi - vmin) / (vmax - vmin) * 100;
+  // Extend the visual range on both sides so extreme values are still visible
+  // rather than clamped against the edge. Guarantees a minimum breathing room.
+  var pad  = Math.max(span * 0.5, Math.abs(value - (lo + hi) / 2) * 0.3);
+  var vmin = Math.min(lo - pad, value - span * 0.2);
+  var vmax = Math.max(hi + pad, value + span * 0.2);
+  var range = vmax - vmin;
 
-  var fillCls = '';
-  if      (side === 'above_hi' || side === 'long_bias')  fillCls = 'long';
-  else if (side === 'below_lo' || side === 'short_bias') fillCls = 'short';
+  var pctVal = (value - vmin) / range * 100;
+  var pctLo  = (lo    - vmin) / range * 100;
+  var pctHi  = (hi    - vmin) / range * 100;
 
   return '<div class="bar-wrap">'
-    + '<div class="bar-fill ' + fillCls + '" style="left:0;width:' + pctVal + '%"></div>'
+    + '<div class="bar-zone short-zone" style="left:0;width:' + pctLo + '%"></div>'
+    + '<div class="bar-zone mid-zone"   style="left:' + pctLo + '%;width:' + (pctHi - pctLo) + '%"></div>'
+    + '<div class="bar-zone long-zone"  style="left:' + pctHi + '%;width:' + (100 - pctHi) + '%"></div>'
     + '<div class="bar-tick" style="left:' + pctLo + '%"></div>'
     + '<div class="bar-tick" style="left:' + pctHi + '%"></div>'
+    + '<div class="bar-marker" style="left:' + pctVal + '%"></div>'
+    + '<div class="bar-marker-arrow" style="left:' + pctVal + '%"></div>'
     + '</div>'
     + '<div class="bar-legend">'
-    + '<span>' + fmt(vmin, 3) + '</span>'
-    + '<span>lo ' + fmt(lo, 3) + ' | hi ' + fmt(hi, 3) + '</span>'
-    + '<span>' + fmt(vmax, 3) + '</span>'
+    + '<span style="color:#fc8181;">short &lt; ' + fmt(lo, 3) + '</span>'
+    + '<span style="color:#FFD700;">now ' + fmt(value, 3) + '</span>'
+    + '<span style="color:#68d391;">long &gt; ' + fmt(hi, 3) + '</span>'
     + '</div>';
 }
 
