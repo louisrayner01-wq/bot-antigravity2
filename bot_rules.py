@@ -317,7 +317,8 @@ class RuleBot:
 
         try:
             notify_open(signal.symbol, side_word, "4h",
-                        signal.entry_price, signal.sl_price, signal.tp_price)
+                        signal.entry_price, signal.sl_price, signal.tp_price,
+                        strategy_label="Strat 1")
         except Exception as exc:
             self.log.debug("notify_open failed: %s", exc)
 
@@ -352,6 +353,7 @@ class RuleBot:
                 trade["pnl_usdt"], reason,
                 sl=trade.get("stop_loss", 0.0),
                 tp=trade.get("take_profit", 0.0),
+                strategy_label="Strat 1",
             )
         except Exception as exc:
             self.log.debug("notify_close failed: %s", exc)

@@ -54,14 +54,23 @@ def notify_startup(pairs: list, equity: float):
     )
 
 
+def _strategy_line(strategy_label: str) -> str:
+    """Optional header line so the reader can tell which family fired.
+    Kept short — the user only needs to know 'Strat 1' vs 'Portfolio Strategy',
+    not which sub-strategy of the portfolio."""
+    return f"Strategy : <b>{strategy_label}</b>\n" if strategy_label else ""
+
+
 def notify_open(symbol: str, side: str, timeframe_label: str,
-                entry: float, sl: float, tp: float):
+                entry: float, sl: float, tp: float,
+                strategy_label: str = ""):
     side_str = "LONG" if side == "long" else "SHORT"
     emoji    = "🟢" if side == "long" else "🔴"
     name     = _asset_name(symbol)
     rr       = _planned_rr(entry, sl, tp, side)
     _send(
         f"<b>{emoji} {side_str} — {name} [{timeframe_label}]</b>\n"
+        f"{_strategy_line(strategy_label)}"
         f"Entry : <b>${entry:,.4f}</b>\n"
         f"SL    : ${sl:,.4f}\n"
         f"TP    : ${tp:,.4f}\n"
@@ -72,7 +81,8 @@ def notify_open(symbol: str, side: str, timeframe_label: str,
 def notify_close(symbol: str, side: str, timeframe_label: str,
                  entry: float, exit_price: float,
                  pnl_usdt: float, reason: str,
-                 sl: float = 0.0, tp: float = 0.0):
+                 sl: float = 0.0, tp: float = 0.0,
+                 strategy_label: str = ""):
     won      = pnl_usdt >= 0
     emoji    = "✅" if won else "❌"
     result   = "WIN" if won else "LOSS"
@@ -89,6 +99,7 @@ def notify_close(symbol: str, side: str, timeframe_label: str,
 
     _send(
         f"<b>{emoji} {result} — {name} [{timeframe_label}]  {side_str}</b>\n"
+        f"{_strategy_line(strategy_label)}"
         f"Entry : ${entry:,.4f}\n"
         f"Exit  : ${exit_price:,.4f}\n"
         f"P&L   : <b>{sign}£{pnl_usdt:.2f}</b>"

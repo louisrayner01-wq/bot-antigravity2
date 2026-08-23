@@ -195,7 +195,29 @@ def build_weex_client() -> WeexClient:
 
 
 def run_single_user_tick(engine: PortfolioEngine, log: logging.Logger) -> None:
+    # Snapshot open slot keys before the tick so we can detect newly-opened
+    # positions and fire a notify_open for each. The engine itself doesn't
+    # know about Telegram — that coupling stays here at the process edge.
+    slots_before = set(engine.state.positions.keys())
     closed = engine.tick()
+    slots_after  = set(engine.state.positions.keys())
+    newly_opened = slots_after - slots_before
+
+    for slot_key in newly_opened:
+        pos = engine.state.positions[slot_key]
+        try:
+            notify_open(
+                pos.get("asset"),
+                "long" if pos.get("side", 0) > 0 else "short",
+                ENTRY_TF,
+                pos.get("entry_price"),
+                pos.get("stop_loss"),
+                pos.get("take_profit"),
+                strategy_label="Portfolio Strategy",
+            )
+        except Exception:
+            pass
+
     for tr in closed:
         _append_trade_row(engine.user_id, tr)
         _post_closed_trade(engine.user_id, tr, engine.state.equity, engine.state.hwm)
@@ -204,6 +226,7 @@ def run_single_user_tick(engine: PortfolioEngine, log: logging.Logger) -> None:
                 tr.asset, "long" if tr.side > 0 else "short", ENTRY_TF,
                 tr.entry_price, tr.exit_price, tr.pnl_usdt, tr.exit_reason,
                 sl=0.0, tp=0.0,
+                strategy_label="Portfolio Strategy",
             )
         except Exception:
             pass
