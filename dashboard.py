@@ -296,6 +296,55 @@ def get_calendar(family: str = Query(STRAT_1)):
     return days
 
 
+@app.get("/api/portfolio-debug")
+def portfolio_debug():
+    """Diagnostic view of the portfolio bot's on-disk state. Lists every file
+    in the state dir, reads the heartbeat, and reports environment presence.
+    Safe to hit anytime — no secrets exposed, just paths and sizes.
+    """
+    out: dict = {
+        "state_dir":            PORTFOLIO_STATE_DIR,
+        "state_dir_exists":     os.path.isdir(PORTFOLIO_STATE_DIR),
+        "trades_file":          PORTFOLIO_TRADES_FILE,
+        "trades_file_exists":   os.path.exists(PORTFOLIO_TRADES_FILE),
+        "trades_file_size":     (os.path.getsize(PORTFOLIO_TRADES_FILE)
+                                 if os.path.exists(PORTFOLIO_TRADES_FILE) else 0),
+        "data_root_listing":    [],
+        "state_dir_listing":    [],
+        "heartbeat":            None,
+    }
+    try:
+        if os.path.isdir("/data"):
+            out["data_root_listing"] = sorted(os.listdir("/data"))[:50]
+    except Exception as exc:
+        out["data_root_listing"] = f"error: {exc}"
+
+    if os.path.isdir(PORTFOLIO_STATE_DIR):
+        try:
+            entries = []
+            for name in sorted(os.listdir(PORTFOLIO_STATE_DIR)):
+                path = os.path.join(PORTFOLIO_STATE_DIR, name)
+                entries.append({
+                    "name": name,
+                    "size": os.path.getsize(path),
+                    "mtime": datetime.fromtimestamp(
+                        os.path.getmtime(path), tz=timezone.utc
+                    ).isoformat(),
+                })
+            out["state_dir_listing"] = entries
+        except Exception as exc:
+            out["state_dir_listing"] = f"error: {exc}"
+
+        hb_path = os.path.join(PORTFOLIO_STATE_DIR, "_heartbeat.json")
+        if os.path.exists(hb_path):
+            try:
+                with open(hb_path) as f:
+                    out["heartbeat"] = json.load(f)
+            except Exception as exc:
+                out["heartbeat"] = f"error: {exc}"
+    return out
+
+
 @app.get("/api/state")
 def get_state(family: str = Query(STRAT_1)):
     fam = family.lower()

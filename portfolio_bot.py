@@ -235,6 +235,24 @@ def main() -> None:
     fetch_candles = make_candle_fetcher(weex)
     state_dir = make_state_dir()
 
+    # Startup heartbeat — proves the bot at least booted this far. Read by
+    # dashboard.py's /api/portfolio-debug so we can distinguish "bot never
+    # started" from "bot started but hasn't ticked yet" from "bot crashed
+    # mid-tick".
+    try:
+        hb = state_dir / "_heartbeat.json"
+        import json as _json
+        from datetime import datetime as _dt, timezone as _tz
+        hb.write_text(_json.dumps({
+            "phase":        "started",
+            "state_dir":    str(state_dir),
+            "poll_seconds": poll,
+            "fortuna_api":  bool(api_url),
+            "started_at":   _dt.now(_tz.utc).isoformat(),
+        }))
+    except Exception as exc:
+        log.warning("could not write startup heartbeat: %s", exc)
+
     # Cache one PortfolioEngine per user across ticks so state stays in-memory.
     engines: Dict[str, PortfolioEngine] = {}
 
@@ -300,6 +318,20 @@ def main() -> None:
             return
         except Exception as exc:
             log.exception("Loop error (will continue): %s", exc)
+
+        # Per-tick heartbeat, updated whether the tick raised or not, so we can
+        # tell from the outside whether the loop is alive.
+        try:
+            from datetime import datetime as _dt, timezone as _tz
+            import json as _json
+            (state_dir / "_heartbeat.json").write_text(_json.dumps({
+                "phase":       "ticking",
+                "last_tick":   _dt.now(_tz.utc).isoformat(),
+                "engines":     list(engines.keys()),
+                "fortuna_api": bool(api_url),
+            }))
+        except Exception:
+            pass
 
         time.sleep(poll)
 
