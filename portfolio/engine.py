@@ -205,10 +205,17 @@ def confluence_signal_with_debug(
     else:
         combined = "FLAT"
 
+    # Would this bar fire a fresh trade? True only on the transition bar
+    # (previous bar was flat, current is aligned). If combined != FLAT but
+    # would_fire is False, the setup is "persistent" — the entry has already
+    # been taken on an earlier bar in this run of aligned bars.
+    would_fire = bool(not fire.empty and fire.iloc[-1] != 0.0)
+
     debug = {
         "bias_value": bv, "bias_lo": bl, "bias_hi": bh, "bias_state": b_state,
         "entry_value": ev, "entry_lo": el, "entry_hi": eh, "entry_side": e_side,
         "combined": combined,
+        "would_fire": would_fire,
     }
     return fire, debug
 

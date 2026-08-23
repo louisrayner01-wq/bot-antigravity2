@@ -1930,6 +1930,8 @@ STRATEGIES_HTML = r"""<!DOCTYPE html>
     .verdict.short { background: #2d1515; color: #fc8181; border: 1px solid #9b2c2c; }
     .verdict.flat  { background: #2d3148; color: #a0aec0; border: 1px solid #3d4268; }
     .verdict.open  { background: #1a2540; color: #90cdf4; border: 1px solid #2d4d7d; }
+    .verdict.fire  { background: #1a2e22; color: #FFD700; border: 1px solid #FFD700; }
+    .verdict.persistent { background: #2d2515; color: #f6ad55; border: 1px solid #dd6b20; }
 
     .cond {
       display: grid; grid-template-columns: 22px 1fr auto;
@@ -2019,6 +2021,15 @@ STRATEGIES_HTML = r"""<!DOCTYPE html>
 </div>
 
 <div id="tab-portfolio" class="tab-body" style="display:none;">
+  <div class="section" style="margin-bottom:12px;">
+    <div class="card" style="padding:10px 14px;font-size:12px;color:#a0aec0;line-height:1.6;">
+      <b style="color:#e2e8f0;">Verdict guide:</b>
+      &nbsp;<span class="verdict fire" style="font-size:10px;">FIRES NOW</span> the bot opens a trade on this tick &middot;
+      <span class="verdict persistent" style="font-size:10px;">ALREADY FIRED</span> conditions still aligned but transition happened on an earlier 4h bar (won&rsquo;t re-enter until conditions reset and re-align) &middot;
+      <span class="verdict open" style="font-size:10px;">IN TRADE</span> position currently open &middot;
+      <span class="verdict flat" style="font-size:10px;">NO SETUP</span> conditions not aligned.
+    </div>
+  </div>
   <div class="section" id="portfolio-container">
     <div class="empty">Loading&#x2026;</div>
   </div>
@@ -2217,8 +2228,22 @@ function renderPortfolio(data) {
     rows.forEach(function(r) {
       var s = r.snap;
       var combined = s.combined || 'FLAT';
-      var verdictCls = s.position_open ? 'verdict open' : ('verdict ' + combined.toLowerCase());
-      var verdictText = s.position_open ? 'IN TRADE' : (combined === 'FLAT' ? 'NO SETUP' : combined + ' SETUP');
+      var verdictCls, verdictText;
+      if (s.position_open) {
+        verdictCls = 'verdict open';
+        verdictText = 'IN TRADE';
+      } else if (combined === 'FLAT') {
+        verdictCls = 'verdict flat';
+        verdictText = 'NO SETUP';
+      } else if (s.would_fire) {
+        // Fresh transition this bar — the bot will open on this tick
+        verdictCls = 'verdict fire';
+        verdictText = combined + ' • FIRES NOW';
+      } else {
+        // Conditions aligned but transition already consumed on an earlier bar
+        verdictCls = 'verdict persistent';
+        verdictText = combined + ' • ALREADY FIRED';
+      }
 
       html += '<div class="card">'
         + '<div class="card-header">'
