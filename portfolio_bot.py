@@ -168,7 +168,12 @@ def _post_closed_trade(user_id: str, trade: ClosedTrade, equity_after: float, hw
 # ── Per-user runner ───────────────────────────────────────────────────────────
 
 def make_state_dir() -> Path:
-    d = Path(os.environ.get("PORTFOLIO_PAPER_STATE_DIR", "./portfolio_state"))
+    # Prefer the Railway persistent volume (/data) so state survives deploys.
+    # Falls back to a repo-relative dir for local dev. Must stay in lock-step
+    # with dashboard.py's PORTFOLIO_PAPER_STATE_DIR default — otherwise the
+    # dashboard looks in one place while the bot writes to another.
+    default = "/data/portfolio_state" if os.path.isdir("/data") else "./portfolio_state"
+    d = Path(os.environ.get("PORTFOLIO_PAPER_STATE_DIR", default))
     d.mkdir(parents=True, exist_ok=True)
     return d
 
