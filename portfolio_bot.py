@@ -129,7 +129,10 @@ def make_candle_fetcher(weex: WeexClient):
             return pd.DataFrame()
         if not raw:
             return pd.DataFrame()
-        df = pd.DataFrame(raw, columns=["ts", "open", "high", "low", "close", "volume"])
+        # Weex sometimes returns >6 columns per candle (quote volume, turnover,
+        # buy/sell volume, etc). We only need OHLCV — trim to the first 6.
+        rows = [r[:6] for r in raw]
+        df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "volume"])
         df["ts"] = pd.to_datetime(df["ts"].astype("int64"), unit="ms", utc=True)
         df = df.set_index("ts").astype({"open": "float64", "high": "float64",
                                         "low": "float64", "close": "float64",
