@@ -282,6 +282,9 @@ def main() -> None:
         eng = get_engine(uid, cap, risk)
         run_single_user_tick(eng, log)
 
+    import traceback as _tb
+    last_error: dict = {}
+
     while True:
         try:
             users: list = []
@@ -301,6 +304,12 @@ def main() -> None:
                         run_single_user_tick(eng, log)
                     except Exception as exc:
                         log.exception("[%s] tick error: %s", uid[:8], exc)
+                        last_error = {
+                            "where": f"user_tick[{uid[:8]}]",
+                            "type":  type(exc).__name__,
+                            "msg":   str(exc),
+                            "trace": _tb.format_exc(),
+                        }
                 # Drop engines whose users are no longer active
                 active_ids = {u.get("user_id") for u in users}
                 for uid in list(engines.keys()):
@@ -312,15 +321,31 @@ def main() -> None:
                 # back to a local single-user tick so the bot keeps scanning
                 # and the dashboard has data to show.
                 log.info("No active portfolio users — running local fallback tick")
-                local_tick()
+                try:
+                    local_tick()
+                except Exception as exc:
+                    log.exception("local_tick error: %s", exc)
+                    last_error = {
+                        "where": "local_tick",
+                        "type":  type(exc).__name__,
+                        "msg":   str(exc),
+                        "trace": _tb.format_exc(),
+                    }
         except KeyboardInterrupt:
             log.info("Interrupted — exiting")
             return
         except Exception as exc:
             log.exception("Loop error (will continue): %s", exc)
+            last_error = {
+                "where": "outer_loop",
+                "type":  type(exc).__name__,
+                "msg":   str(exc),
+                "trace": _tb.format_exc(),
+            }
 
-        # Per-tick heartbeat, updated whether the tick raised or not, so we can
-        # tell from the outside whether the loop is alive.
+        # Per-tick heartbeat: written whether or not the tick raised, and
+        # includes the last exception (if any) so /api/portfolio-debug can
+        # surface it without needing Railway logs.
         try:
             from datetime import datetime as _dt, timezone as _tz
             import json as _json
@@ -329,6 +354,7 @@ def main() -> None:
                 "last_tick":   _dt.now(_tz.utc).isoformat(),
                 "engines":     list(engines.keys()),
                 "fortuna_api": bool(api_url),
+                "last_error":  last_error or None,
             }))
         except Exception:
             pass
