@@ -15,7 +15,16 @@ Environment variables (Railway):
   BOT_ENGINE_SECRET          — shared secret with the API
   PORTFOLIO_POLL_SECONDS     — override the default 5 min tick cadence
   PORTFOLIO_PAPER_STATE_DIR  — where per-user portfolio state files go
-                               (default: ./portfolio_state)
+                               (default: /data/portfolio_state on Railway)
+  PORTFOLIO_PAPER_TRADING    — "true" (default) | "false" — flip to false to
+                               place real WEEX perp orders. Requires each
+                               active user to have verified WEEX keys.
+  LOCAL_USER_ID / LOCAL_CAPITAL / LOCAL_RISK
+                             — single-user fallback settings when Fortuna
+                               reports no active portfolio users.
+  WEEX_API_KEY / WEEX_API_SECRET / WEEX_PASSPHRASE
+                             — used for local-mode live trading only.
+                               In multi-user mode, keys come from Fortuna.
 """
 
 from __future__ import annotations
@@ -32,6 +41,7 @@ from weex_client import WeexClient
 from portfolio.config import (
     STRATEGIES, DEFAULT_POLL_SECONDS, DEFAULT_STARTING_EQUITY,
     DEFAULT_RISK_PER_TRADE, ENTRY_TF, BIAS_TF, DEFAULT_LEVERAGE,
+    DEFAULT_PAPER_TRADING,
 )
 from portfolio.engine import PortfolioEngine, ClosedTrade
 
@@ -181,17 +191,30 @@ def make_state_dir() -> Path:
     return d
 
 
-def build_weex_client() -> WeexClient:
-    """Portfolio bot is paper-only. Public candle endpoints work without keys,
-    but WeexClient signs private endpoints when needed. Env-var keys are
-    optional for the portfolio bot since we never place real orders — only
-    read prices."""
-    return WeexClient(
-        api_key=os.environ.get("WEEX_API_KEY", ""),
-        api_secret=os.environ.get("WEEX_API_SECRET", ""),
-        passphrase=os.environ.get("WEEX_PASSPHRASE", ""),
-        base_url=os.environ.get("WEEX_BASE_URL", "https://api-spot.weex.com"),
-    )
+# Global paper-mode flag. Mirrors Strat 1's PAPER_TRADING env var so the two
+# bots can be flipped independently. Default paper for safety — flipping to
+# live requires (a) this env var false, (b) per-user WEEX keys present, and
+# (c) at least one active portfolio user in the Fortuna dashboard.
+PAPER_TRADING = os.environ.get(
+    "PORTFOLIO_PAPER_TRADING",
+    "true" if DEFAULT_PAPER_TRADING else "false",
+).lower() != "false"
+
+WEEX_SPOT_BASE = os.environ.get("WEEX_BASE_URL", "https://api-spot.weex.com")
+
+
+def build_public_client() -> WeexClient:
+    """Public candle-fetch client — no auth needed for /market/klines."""
+    return WeexClient(api_key="", api_secret="", passphrase="", base_url=WEEX_SPOT_BASE)
+
+
+def build_user_weex_client(api_key: str, api_secret: str, passphrase: str) -> Optional[WeexClient]:
+    """Per-user authenticated client for live trading. Returns None when any
+    credential is missing so the engine can silently downgrade to paper."""
+    if not api_key or not api_secret:
+        return None
+    return WeexClient(api_key=api_key, api_secret=api_secret,
+                      passphrase=passphrase, base_url=WEEX_SPOT_BASE)
 
 
 def run_single_user_tick(engine: PortfolioEngine, log: logging.Logger) -> None:
@@ -257,9 +280,10 @@ def main() -> None:
              len(STRATEGIES), poll)
     log.info("Strategies: %s", ", ".join(s.key for s in STRATEGIES))
 
-    weex = build_weex_client()
-    fetch_candles = make_candle_fetcher(weex)
+    weex_public = build_public_client()
+    fetch_candles = make_candle_fetcher(weex_public)
     state_dir = make_state_dir()
+    log.info("Paper trading: %s", PAPER_TRADING)
 
     # Startup heartbeat — proves the bot at least booted this far. Read by
     # dashboard.py's /api/portfolio-debug so we can distinguish "bot never
@@ -282,30 +306,47 @@ def main() -> None:
     # Cache one PortfolioEngine per user across ticks so state stays in-memory.
     engines: Dict[str, PortfolioEngine] = {}
 
-    def get_engine(user_id: str, capital: float, risk: float) -> PortfolioEngine:
+    def get_engine(user_id: str, capital: float, risk: float,
+                   api_key: str = "", api_secret: str = "", passphrase: str = "") -> PortfolioEngine:
         eng = engines.get(user_id)
         if eng is None:
+            weex_client = build_user_weex_client(api_key, api_secret, passphrase) if not PAPER_TRADING else None
             eng = PortfolioEngine(
                 user_id=user_id,
                 starting_equity=capital,
                 risk_per_trade=risk,
                 state_dir=state_dir,
                 fetch_candles=fetch_candles,
+                paper=PAPER_TRADING,
+                weex_client=weex_client,
             )
             engines[user_id] = eng
         else:
             # Keep risk in sync with user's latest slider
             eng.risk_per_trade = risk
+            # Keep the per-user WEEX client fresh in case keys rotated. Only
+            # rebuild when we're live — paper mode never touches keys.
+            if not PAPER_TRADING and (api_key or api_secret):
+                new_client = build_user_weex_client(api_key, api_secret, passphrase)
+                if new_client is not None:
+                    eng.weex = new_client
+                    eng.paper = False
         return eng
 
     def local_tick():
         """Fallback single-user tick — mirrors bot_rules.py behaviour when
         no active Fortuna users exist. Keeps the dashboard populated so we
-        can see the strategy scanning locally."""
+        can see the strategy scanning locally. Reads WEEX creds from env
+        vars so live mode works without a Fortuna user record."""
         uid = os.environ.get("LOCAL_USER_ID", "local")
         cap = float(os.environ.get("LOCAL_CAPITAL", DEFAULT_STARTING_EQUITY))
         risk = float(os.environ.get("LOCAL_RISK", DEFAULT_RISK_PER_TRADE))
-        eng = get_engine(uid, cap, risk)
+        eng = get_engine(
+            uid, cap, risk,
+            api_key=os.environ.get("WEEX_API_KEY", ""),
+            api_secret=os.environ.get("WEEX_API_SECRET", ""),
+            passphrase=os.environ.get("WEEX_PASSPHRASE", ""),
+        )
         run_single_user_tick(eng, log)
 
     import traceback as _tb
@@ -325,7 +366,19 @@ def main() -> None:
                     risk = float(u.get("risk_per_trade") or DEFAULT_RISK_PER_TRADE)
                     if not uid:
                         continue
-                    eng = get_engine(uid, cap, risk)
+                    # Fetch per-user WEEX keys only when we need them (live mode)
+                    # — get_user_config decrypts secrets on the API side, so we
+                    # avoid the round-trip in paper mode.
+                    api_key = api_secret = passphrase = ""
+                    if not PAPER_TRADING and fortuna_client is not None:
+                        cfg = fortuna_client.get_user_config(uid, strategy_family=FAMILY) or {}
+                        api_key    = cfg.get("api_key", "") or ""
+                        api_secret = cfg.get("api_secret", "") or ""
+                        passphrase = cfg.get("passphrase", "") or ""
+                    eng = get_engine(uid, cap, risk,
+                                     api_key=api_key,
+                                     api_secret=api_secret,
+                                     passphrase=passphrase)
                     try:
                         run_single_user_tick(eng, log)
                     except Exception as exc:

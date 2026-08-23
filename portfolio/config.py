@@ -19,6 +19,16 @@ MAX_GROSS_EXPOSURE        = 1.0           # cap on total margin as fraction of e
 CIRCUIT_BREAKER_DD_PCT    = 0.50          # halt trading at -50% account drawdown
 MAINTENANCE_MARGIN_PCT    = 0.005
 
+# Paper vs live trading. Mirrors Strat 1's paper_trading config knob so the
+# behaviours line up. Default is paper for safety — flip via env var
+# PORTFOLIO_PAPER_TRADING=false to place real WEEX perp orders.
+DEFAULT_PAPER_TRADING     = True
+
+# When placing live futures orders, Weex expects the _UMCBL contract suffix.
+# Candles still fetched from the spot endpoint (1000/call vs 200/call on
+# contract), so we only tag the suffix at order time.
+FUTURES_SUFFIX            = "_UMCBL"
+
 # ── Trade management ──────────────────────────────────────────────────────────
 DEFAULT_LEVERAGE          = 3
 SL_ATR_MULTIPLE           = 2.0           # SL = 2 × ATR(14, 4h)

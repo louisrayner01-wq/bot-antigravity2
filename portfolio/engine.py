@@ -25,7 +25,7 @@ from portfolio.config import (
     ATR_PERIOD, SL_ATR_MULTIPLE, TP_R_MULTIPLE, MAX_HOLD_BARS_4H,
     BIAS_TERCILE_WINDOW, ENTRY_TERCILE_WINDOW,
     FEE_RATE_PER_SIDE, SLIPPAGE_PER_SIDE, MAX_GROSS_EXPOSURE,
-    CIRCUIT_BREAKER_DD_PCT, DEFAULT_LEVERAGE,
+    CIRCUIT_BREAKER_DD_PCT, DEFAULT_LEVERAGE, FUTURES_SUFFIX,
 )
 from portfolio.signals import entry_signal, bias_signal, atr
 
@@ -164,7 +164,14 @@ def used_margin(positions: Dict[str, Position]) -> float:
 # ── Engine ────────────────────────────────────────────────────────────────────
 
 class PortfolioEngine:
-    """One instance per (user_id, family="portfolio"). Owns its own state file."""
+    """One instance per (user_id, family="portfolio"). Owns its own state file.
+
+    Paper vs live is controlled by the `paper` flag on init. In live mode a
+    WeexClient must be supplied — every entry places a real futures order +
+    exchange-side TP/SL plan order, and every close sends a real close order.
+    Local SL/TP checks stay on as belt-and-braces (exchange plan may already
+    have triggered; duplicate closes are caught + logged).
+    """
 
     def __init__(
         self,
@@ -173,10 +180,19 @@ class PortfolioEngine:
         risk_per_trade: float,
         state_dir: Path,
         fetch_candles,        # callable(asset, tf) -> pd.DataFrame
+        paper: bool = True,
+        weex_client=None,     # WeexClient — required when paper=False
     ):
         self.user_id = user_id
         self.risk_per_trade = risk_per_trade
         self.fetch_candles  = fetch_candles
+        self.paper          = paper
+        self.weex           = weex_client
+        if not paper and weex_client is None:
+            # Refuse to run live without keys — safer to silently downgrade
+            # to paper than to no-op live orders. Same posture as Strat 1.
+            logger.warning("[%s] paper=False but no weex_client — forcing paper=True", user_id[:8])
+            self.paper = True
 
         state_dir.mkdir(parents=True, exist_ok=True)
         self.state_path = state_dir / f"portfolio_{user_id}.json"
@@ -188,16 +204,66 @@ class PortfolioEngine:
             # so we treat the current equity as the baseline and go from here.
             if not self.state.initial_capital:
                 self.state.initial_capital = self.state.equity
-            logger.info("[%s] Restored portfolio state: equity=%.2f positions=%d",
-                        user_id[:8], self.state.equity, len(self.state.positions))
+            logger.info("[%s] Restored portfolio state: equity=%.2f positions=%d paper=%s",
+                        user_id[:8], self.state.equity, len(self.state.positions), self.paper)
         else:
             self.state = EngineState(
                 equity=starting_equity,
                 hwm=starting_equity,
                 initial_capital=starting_equity,
             )
+            logger.info("[%s] New portfolio state: equity=%.2f paper=%s",
+                        user_id[:8], starting_equity, self.paper)
 
         self._closed_trades_this_tick: List[ClosedTrade] = []
+
+    # ── live execution helpers ─────────────────────────────────────────────
+
+    def _futures_symbol(self, asset: str) -> str:
+        """Portfolio config stores plain spot symbols (BTCUSDT). Live futures
+        orders on Weex need the _UMCBL suffix. Candle fetches still use spot
+        (higher rate limit, no auth required)."""
+        return asset if asset.endswith(FUTURES_SUFFIX) else asset + FUTURES_SUFFIX
+
+    def _place_live_entry(self, asset: str, side: int, qty: float,
+                          sl: float, tp: float, leverage: int) -> None:
+        """Set leverage, open a real futures market order, attach exchange-side
+        TP/SL. Failures are logged, not raised — a failed exchange order does
+        not roll back the local Position record (bot will still track it as
+        open until SL/TP resolves it)."""
+        if self.paper or self.weex is None:
+            return
+        sym = self._futures_symbol(asset)
+        side_word  = "long" if side == LONG else "short"
+        order_side = "open_long" if side == LONG else "open_short"
+        try:
+            self.weex.set_leverage(sym, leverage, side_word)
+        except Exception as exc:
+            logger.warning("[%s] set_leverage failed for %s: %s", self.user_id[:8], sym, exc)
+        try:
+            self.weex.futures_order(sym, order_side, qty)
+        except Exception as exc:
+            logger.error("[%s] futures_order OPEN failed for %s: %s", self.user_id[:8], sym, exc)
+            return
+        try:
+            self.weex.place_tpsl(sym, side_word, sl, tp, size=qty)
+        except Exception as exc:
+            logger.warning("[%s] place_tpsl failed for %s: %s", self.user_id[:8], sym, exc)
+
+    def _place_live_close(self, asset: str, side: int, qty: float) -> None:
+        """Send a real close order. If the exchange-side TP/SL already fired,
+        the position no longer exists and Weex will return an error — we
+        catch it because the local state has already computed exit correctly."""
+        if self.paper or self.weex is None:
+            return
+        sym = self._futures_symbol(asset)
+        order_side = "close_long" if side == LONG else "close_short"
+        try:
+            self.weex.futures_order(sym, order_side, qty)
+        except Exception as exc:
+            # Common: position already flat because exchange plan triggered first.
+            logger.info("[%s] futures_order CLOSE for %s returned error (may already be flat): %s",
+                        self.user_id[:8], sym, exc)
 
     # ── persistence ─────────────────────────────────────────────────────────
 
@@ -307,6 +373,11 @@ class PortfolioEngine:
                 self._store_position(pos)
 
     def _close_position(self, pos: Position, exit_price: float, reason: str) -> None:
+        # Live-mode: send the real close order first so the exchange settles
+        # around the price we computed exit at. If exchange TP/SL already
+        # fired this will error and get logged — local state still updates.
+        self._place_live_close(pos.asset, pos.side, pos.quantity)
+
         # PnL: (exit − entry) × qty × side, minus round-trip fees + slippage
         raw_pnl = (exit_price - pos.entry_price) * pos.quantity * pos.side
         notional_in  = abs(pos.quantity) * pos.entry_price
@@ -405,7 +476,11 @@ class PortfolioEngine:
                 entry_atr=atr_now,
             )
             self._store_position(pos)
-            logger.info("[%s] OPEN  %s %s %s @ %.4f qty=%.6f SL=%.4f TP=%.4f",
+            # Live-mode: fire the real WEEX order + exchange-side TP/SL. In
+            # paper mode this is a no-op so the local Position is the sole
+            # record of the trade.
+            self._place_live_entry(asset, side, qty, stop_loss, take_profit, cfg.leverage)
+            logger.info("[%s] OPEN  %s %s %s @ %.4f qty=%.6f SL=%.4f TP=%.4f paper=%s",
                         self.user_id[:8], cfg.key, asset,
                         "LONG" if side == LONG else "SHORT",
-                        price, qty, stop_loss, take_profit)
+                        price, qty, stop_loss, take_profit, self.paper)
