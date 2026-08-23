@@ -81,6 +81,10 @@ class EngineState:
     initial_capital: float = 0.0        # locked at first init; used for PnL %
     halted:          bool  = False      # true once circuit breaker fires
     positions:       Dict[str, dict] = field(default_factory=dict)   # slot_key -> Position.__dict__
+    # Live snapshot of firing conditions per (strategy_key, asset) — populated
+    # each tick and read by the /strategies dashboard page. Not part of the
+    # trading logic; safe to be empty on legacy state files.
+    signals:         Dict[str, dict] = field(default_factory=dict)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), default=str, indent=2)
@@ -97,6 +101,7 @@ class EngineState:
             initial_capital=float(d.get("initial_capital") or equity),
             halted=bool(d.get("halted", False)),
             positions=d.get("positions", {}),
+            signals=d.get("signals", {}),
         )
 
 
@@ -120,12 +125,33 @@ def confluence_signal(cfg: StrategyConfig,
     """Return {-1, 0, +1} per bar for one (strategy, asset). Fires on
     transitions only (bar t-1 was 0 and bar t is not).
     """
+    sig, _ = confluence_signal_with_debug(cfg, candles_4h, daily_index)
+    return sig
+
+
+def confluence_signal_with_debug(
+    cfg: StrategyConfig,
+    candles_4h: pd.DataFrame,
+    daily_index: pd.DatetimeIndex,
+) -> tuple[pd.Series, dict]:
+    """Same as confluence_signal, but also returns a dict of the latest-bar
+    intermediates so the /strategies dashboard can render each confluence.
+
+    Debug dict:
+      bias_value / bias_lo / bias_hi / bias_state
+      entry_value / entry_lo / entry_hi / entry_side ('above_hi'|'below_lo'|'mid')
+      combined ('LONG'|'SHORT'|'FLAT')
+    """
+    empty_debug = {
+        "bias_value": None, "bias_lo": None, "bias_hi": None, "bias_state": "insufficient",
+        "entry_value": None, "entry_lo": None, "entry_hi": None, "entry_side": "insufficient",
+        "combined": "FLAT",
+    }
     if len(candles_4h) < ENTRY_TERCILE_WINDOW + 5:
-        return pd.Series(0.0, index=candles_4h.index)
+        return pd.Series(0.0, index=candles_4h.index), empty_debug
 
     bias = bias_signal(cfg.bias_signal, daily_index)
     bias_state = _tercile_bias_state(bias, BIAS_TERCILE_WINDOW)
-    # Align daily bias state onto the 4h entry index
     bias_aligned = bias_state.reindex(candles_4h.index, method="ffill")
 
     entry = entry_signal(cfg.entry_signal, candles_4h)
@@ -139,7 +165,52 @@ def confluence_signal(cfg: StrategyConfig,
     sig[short_cond] = SHORT
 
     prev = sig.shift(1).fillna(0)
-    return sig.where((sig != 0) & (prev == 0), 0.0)
+    fire = sig.where((sig != 0) & (prev == 0), 0.0)
+
+    # Latest-bar debug snapshot (for the dashboard). Use bias quantile from the
+    # daily series (BIAS_TERCILE_WINDOW), not the aligned one — the aligned
+    # series has been ffilled so its rolling stats are misleading.
+    b_lo = bias.rolling(BIAS_TERCILE_WINDOW).quantile(1 / 3)
+    b_hi = bias.rolling(BIAS_TERCILE_WINDOW).quantile(2 / 3)
+
+    def _last_finite(s: pd.Series):
+        s = s.dropna()
+        return float(s.iloc[-1]) if not s.empty else None
+
+    bv, bl, bh = _last_finite(bias), _last_finite(b_lo), _last_finite(b_hi)
+    ev, el, eh = _last_finite(entry), _last_finite(e_lo), _last_finite(e_hi)
+
+    if bv is None or bl is None or bh is None:
+        b_state = "insufficient"
+    elif bv > bh:
+        b_state = "long_bias"
+    elif bv < bl:
+        b_state = "short_bias"
+    else:
+        b_state = "neutral"
+
+    if ev is None or el is None or eh is None:
+        e_side = "insufficient"
+    elif ev > eh:
+        e_side = "above_hi"
+    elif ev < el:
+        e_side = "below_lo"
+    else:
+        e_side = "mid"
+
+    if b_state == "long_bias" and e_side == "above_hi":
+        combined = "LONG"
+    elif b_state == "short_bias" and e_side == "below_lo":
+        combined = "SHORT"
+    else:
+        combined = "FLAT"
+
+    debug = {
+        "bias_value": bv, "bias_lo": bl, "bias_hi": bh, "bias_state": b_state,
+        "entry_value": ev, "entry_lo": el, "entry_hi": eh, "entry_side": e_side,
+        "combined": combined,
+    }
+    return fire, debug
 
 
 # ── Position sizing ───────────────────────────────────────────────────────────
@@ -308,6 +379,7 @@ class PortfolioEngine:
         self._manage_open_positions(get_candles)
 
         # 2) Check for new entries per strategy
+        self.state.signals = {}
         for cfg in STRATEGIES:
             self._check_entries(cfg, get_candles)
 
@@ -415,11 +487,19 @@ class PortfolioEngine:
     def _check_entries(self, cfg: StrategyConfig, get_candles) -> None:
         for asset in assets_for(cfg.variant):
             slot_key = f"{cfg.key}::{asset}"
-            if slot_key in self.state.positions:
-                continue  # already open — one slot per (strategy, asset)
 
             candles_4h = get_candles(asset, "4h")
             if candles_4h is None or candles_4h.empty:
+                # Still record an empty snapshot so the dashboard shows the slot
+                self.state.signals[slot_key] = {
+                    "strategy_key": cfg.key,
+                    "asset":        asset,
+                    "bias_signal":  cfg.bias_signal,
+                    "entry_signal": cfg.entry_signal,
+                    "position_open": slot_key in self.state.positions,
+                    "combined":     "FLAT",
+                    "reason":       "no candles",
+                }
                 continue
 
             # Daily index for bias — reuse 4h candles' end, sample 1 per day
@@ -431,7 +511,23 @@ class PortfolioEngine:
                 freq="D",
                 tz="UTC",
             )
-            sig = confluence_signal(cfg, candles_4h, daily_index)
+            sig, debug = confluence_signal_with_debug(cfg, candles_4h, daily_index)
+
+            # Snapshot for the /strategies dashboard page (every asset, every
+            # tick — regardless of whether the signal fires). This is what the
+            # UI polls to render firing conditions.
+            self.state.signals[slot_key] = {
+                "strategy_key":  cfg.key,
+                "asset":         asset,
+                "bias_signal":   cfg.bias_signal,
+                "entry_signal":  cfg.entry_signal,
+                "position_open": slot_key in self.state.positions,
+                **debug,
+            }
+
+            if slot_key in self.state.positions:
+                continue  # already open — one slot per (strategy, asset)
+
             latest_sig = float(sig.iloc[-1]) if not sig.empty else 0.0
             if latest_sig == 0.0:
                 continue

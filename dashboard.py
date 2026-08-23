@@ -19,6 +19,7 @@ import os
 import time
 import zipfile
 from datetime import datetime, timezone
+from typing import Dict, Optional
 
 from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -343,6 +344,56 @@ def portfolio_debug():
             except Exception as exc:
                 out["heartbeat"] = f"error: {exc}"
     return out
+
+
+@app.get("/api/strategies/signals")
+def get_strategy_signals():
+    """Return the live firing-condition snapshots for both strategy families.
+
+    Read straight from the state files the two bots already write — no
+    indicator recomputation server-side. Data is refreshed on each bot tick
+    (Strat 1 every 5m; Portfolio every 5m), so polling at 30s is fine.
+    """
+    strat_1: dict = {}
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE) as f:
+                s = json.load(f)
+            strat_1 = {
+                "updated_at":    s.get("updated_at"),
+                "strategy_mode": s.get("strategy_mode"),
+                "signals":       s.get("signals") or {},
+                "positions":     s.get("positions") or {},
+            }
+        except Exception as exc:
+            strat_1 = {"error": f"could not read state.json: {exc}"}
+
+    portfolio_signals: Dict[str, dict] = {}
+    portfolio_updated: Optional[str] = None
+    files = sorted(glob.glob(os.path.join(PORTFOLIO_STATE_DIR, "portfolio_*.json")))
+    for path in files:
+        try:
+            with open(path) as f:
+                s = json.load(f)
+        except Exception:
+            continue
+        # Single-user mode: use the raw slot key. Multi-user: prefix so slots
+        # from different users don't collide.
+        user_short = os.path.basename(path).replace("portfolio_", "").replace(".json", "")[:8]
+        for slot, snap in (s.get("signals") or {}).items():
+            key = f"{user_short}::{slot}" if len(files) > 1 else slot
+            portfolio_signals[key] = snap
+        mtime = datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc).isoformat()
+        if portfolio_updated is None or mtime > portfolio_updated:
+            portfolio_updated = mtime
+
+    return {
+        "strat_1":   strat_1,
+        "portfolio": {
+            "updated_at": portfolio_updated,
+            "signals":    portfolio_signals,
+        },
+    }
 
 
 @app.get("/api/state")
@@ -905,6 +956,9 @@ HTML = """<!DOCTYPE html>
     </a>
     <a href="/calendar" style="text-decoration:none;">
       <div class="badge" style="background:#2d3148;color:#90cdf4;cursor:pointer;">&#x1F4C5; Calendar</div>
+    </a>
+    <a href="/strategies" style="text-decoration:none;">
+      <div class="badge" style="background:#2d3148;color:#90cdf4;cursor:pointer;">&#x1F3AF; Signals</div>
     </a>
     <a href="/system" style="text-decoration:none;">
       <div class="badge" style="background:#2d3148;color:#90cdf4;cursor:pointer;">&#x2699;&#xFE0F; System</div>
@@ -1814,3 +1868,411 @@ setInterval(load, 30000);
 @app.get("/system", response_class=HTMLResponse)
 def system_view():
     return SYSTEM_HTML
+
+
+# ── Strategies (firing conditions) page ───────────────────────────────────────
+
+STRATEGIES_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fortuna — Strategies</title>
+  <link rel="icon" href="/icon.png" type="image/png">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0f1117; color: #e2e8f0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px; padding-bottom: 60px;
+    }
+    header {
+      background: #1a1d2e; padding: 12px 16px;
+      display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 1px solid #2d3148; position: sticky; top: 0; z-index: 10;
+    }
+    .brand { font-size: 15px; font-weight: 700; letter-spacing: 2px;
+             background: linear-gradient(180deg,#FFE566,#B8860B);
+             -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .brand-sub  { font-size: 9px; letter-spacing: 2px; color: #718096; text-transform: uppercase; }
+    .nav-btn { background: #2d3148; color: #e2e8f0; border: 1px solid #3d4268;
+               border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 600;
+               cursor: pointer; text-decoration: none; }
+
+    .page-title { padding: 20px 16px 4px; font-size: 18px; font-weight: 700; }
+    .refresh-note { padding: 0 16px 12px; font-size: 12px; color: #718096; }
+
+    .tabs { display: flex; gap: 4px; padding: 0 16px; border-bottom: 1px solid #2d3148; margin-bottom: 12px; }
+    .tab {
+      padding: 10px 16px; cursor: pointer; font-weight: 600; font-size: 13px;
+      color: #718096; border-bottom: 2px solid transparent;
+    }
+    .tab.active { color: #FFD700; border-bottom-color: #FFD700; }
+    .tab:hover { color: #e2e8f0; }
+
+    .section { padding: 0 16px; }
+
+    .card {
+      background: #1a1d2e; border: 1px solid #2d3148; border-radius: 10px;
+      padding: 14px 16px; margin-bottom: 12px;
+    }
+    .card-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 10px; gap: 8px; flex-wrap: wrap;
+    }
+    .card-title { font-size: 15px; font-weight: 700; }
+    .card-sub   { font-size: 11px; color: #718096; margin-top: 2px; }
+    .verdict {
+      font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 6px;
+      letter-spacing: 0.5px;
+    }
+    .verdict.long  { background: #1a2e22; color: #68d391; border: 1px solid #276749; }
+    .verdict.short { background: #2d1515; color: #fc8181; border: 1px solid #9b2c2c; }
+    .verdict.flat  { background: #2d3148; color: #a0aec0; border: 1px solid #3d4268; }
+    .verdict.open  { background: #1a2540; color: #90cdf4; border: 1px solid #2d4d7d; }
+
+    .cond {
+      display: grid; grid-template-columns: 22px 1fr auto;
+      align-items: center; gap: 10px; padding: 8px 0;
+      border-bottom: 1px solid #262a3f; font-size: 13px;
+    }
+    .cond:last-child { border-bottom: none; }
+    .cond .dot {
+      width: 14px; height: 14px; border-radius: 50%;
+    }
+    .cond .dot.ok   { background: #48bb78; box-shadow: 0 0 6px #48bb78aa; }
+    .cond .dot.fail { background: #4a5568; }
+    .cond .label { font-weight: 500; }
+    .cond .value { font-family: ui-monospace, monospace; font-size: 12px; color: #a0aec0; }
+
+    .bar-wrap {
+      margin: 6px 0 10px; position: relative;
+      background: #262a3f; height: 12px; border-radius: 6px; overflow: hidden;
+    }
+    .bar-fill {
+      position: absolute; top: 0; bottom: 0; background: #4a5568;
+    }
+    .bar-fill.long  { background: linear-gradient(90deg, #48bb78, #68d391); }
+    .bar-fill.short { background: linear-gradient(90deg, #fc8181, #f56565); }
+    .bar-tick {
+      position: absolute; top: -2px; bottom: -2px; width: 2px; background: #FFD700;
+    }
+    .bar-legend {
+      display: flex; justify-content: space-between; font-size: 10px;
+      color: #718096; font-family: ui-monospace, monospace; margin-top: 2px;
+    }
+    .bar-title {
+      display: flex; justify-content: space-between; margin-top: 8px;
+      font-size: 12px; font-weight: 600;
+    }
+    .bar-state {
+      font-size: 11px; padding: 2px 8px; border-radius: 4px; font-weight: 600;
+    }
+    .bar-state.long_bias, .bar-state.above_hi { background: #1a2e22; color: #68d391; }
+    .bar-state.short_bias, .bar-state.below_lo { background: #2d1515; color: #fc8181; }
+    .bar-state.neutral, .bar-state.mid { background: #2d3148; color: #a0aec0; }
+    .bar-state.insufficient { background: #2d3148; color: #718096; }
+
+    .empty { text-align: center; padding: 40px 16px; color: #718096; font-size: 13px; }
+
+    .btc-bias-card {
+      background: #1a1d2e; border: 1px solid #2d3148; border-radius: 10px;
+      padding: 12px 16px; margin: 0 16px 12px;
+      display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+    }
+    .btc-bias-title { font-size: 13px; font-weight: 600; color: #a0aec0; }
+    .btc-bias-value { font-size: 20px; font-weight: 700; }
+    .btc-bias-detail { font-family: ui-monospace, monospace; font-size: 11px; color: #718096; }
+
+    .strat-group { margin-bottom: 20px; }
+    .strat-group-title {
+      font-size: 13px; font-weight: 700; color: #FFD700; text-transform: uppercase;
+      letter-spacing: 1px; margin: 8px 16px 8px;
+    }
+    .strat-group-sub {
+      font-size: 11px; color: #718096; margin: 0 16px 8px;
+    }
+  </style>
+</head>
+<body>
+<header>
+  <div>
+    <div class="brand">FORTUNA</div>
+    <div class="brand-sub">Strategy Signals</div>
+  </div>
+  <a href="/" class="nav-btn">&#x2190; Dashboard</a>
+</header>
+
+<div class="page-title">Live Firing Conditions</div>
+<div class="refresh-note" id="refresh-note">Auto-refreshes every 30s</div>
+
+<div class="tabs">
+  <div class="tab active" data-tab="strat_1" onclick="setTab('strat_1')">Strategy 1 · Rule-based</div>
+  <div class="tab" data-tab="portfolio" onclick="setTab('portfolio')">Portfolio v1 · Confluences</div>
+</div>
+
+<div id="tab-strat_1" class="tab-body">
+  <div id="btc-bias-container"></div>
+  <div class="section" id="strat_1-container">
+    <div class="empty">Loading&#x2026;</div>
+  </div>
+</div>
+
+<div id="tab-portfolio" class="tab-body" style="display:none;">
+  <div class="section" id="portfolio-container">
+    <div class="empty">Loading&#x2026;</div>
+  </div>
+</div>
+
+<script>
+var _data = null;
+var _tab = 'strat_1';
+
+function setTab(name) {
+  _tab = name;
+  document.querySelectorAll('.tab').forEach(function(t) {
+    t.classList.toggle('active', t.getAttribute('data-tab') === name);
+  });
+  document.getElementById('tab-strat_1').style.display   = name === 'strat_1'   ? '' : 'none';
+  document.getElementById('tab-portfolio').style.display = name === 'portfolio' ? '' : 'none';
+}
+
+function fmt(v, d) {
+  d = d === undefined ? 2 : d;
+  if (v === null || v === undefined || (typeof v === 'number' && isNaN(v))) return '—';
+  return parseFloat(v).toFixed(d);
+}
+
+function dot(ok) {
+  return '<span class="dot ' + (ok ? 'ok' : 'fail') + '"></span>';
+}
+
+// ─── Strategy 1 rendering ─────────────────────────────────────────────────────
+
+function renderBtcBias(bias) {
+  if (!bias) { document.getElementById('btc-bias-container').innerHTML = ''; return; }
+  var v = bias.value;
+  var label, cls;
+  if (v === 1)       { label = 'BULL';    cls = 'verdict long';  }
+  else if (v === -1) { label = 'BEAR';    cls = 'verdict short'; }
+  else               { label = 'UNKNOWN'; cls = 'verdict flat';  }
+  var close = bias.daily_close, sma = bias.daily_sma20;
+  var spread = (close && sma) ? ((close - sma) / sma * 100).toFixed(2) + '%' : '—';
+  document.getElementById('btc-bias-container').innerHTML =
+    '<div class="btc-bias-card">'
+    + '<div><div class="btc-bias-title">BTC Daily Bias (drives every Strat 1 signal)</div>'
+    + '<div class="btc-bias-detail">Close ' + fmt(close, 2) + ' vs SMA20 ' + fmt(sma, 2)
+    + ' &nbsp;·&nbsp; spread ' + spread + '</div></div>'
+    + '<span class="' + cls + '" style="font-size:14px;">' + label + '</span>'
+    + '</div>';
+}
+
+function condRow(label, ok, value) {
+  return '<div class="cond">' + dot(ok)
+    + '<div class="label">' + label + '</div>'
+    + '<div class="value">' + (value || '') + '</div>'
+    + '</div>';
+}
+
+function renderStrat1(state) {
+  var el = document.getElementById('strat_1-container');
+  if (!state || !state.signals || !state.signals.assets) {
+    el.innerHTML = '<div class="empty">No Strat 1 signal snapshot yet — bot may still be initialising.</div>';
+    return;
+  }
+  var assets = state.signals.assets;
+  var positions = state.positions || {};
+  var openBases = {};
+  Object.keys(positions).forEach(function(k) {
+    var sym = positions[k].symbol || '';
+    var base = sym.replace('USDT_UMCBL','').replace('USDT','');
+    openBases[base] = positions[k];
+  });
+
+  var order = ['BTC','ETH','SOL'];
+  var html = '';
+  order.forEach(function(base) {
+    var a = assets[base];
+    if (!a) return;
+    var side = a.side || 'FLAT';
+    var isOpen = !!openBases[base];
+    var verdictCls = isOpen ? 'verdict open' : ('verdict ' + side.toLowerCase());
+    var verdictText = isOpen ? ('IN TRADE · ' + (openBases[base].side || '').toUpperCase())
+                             : (side === 'FLAT' ? 'NO SETUP' : side + ' SETUP');
+
+    // Long or short conditions — pick whichever bias direction is active,
+    // fall back to long if btc_bias is 0.
+    var isBearBias = a.btc_bias === -1;
+    var conds = isBearBias ? (a.conditions_short || {}) : (a.conditions_long || {});
+    var dir = isBearBias ? 'SHORT' : 'LONG';
+
+    var rows = '';
+    if (dir === 'LONG') {
+      rows += condRow('4h low touched EMA9 (wick)',
+                      conds.wick_touch_ema9,
+                      'low ' + fmt(a.low, 2) + ' vs EMA9 ' + fmt(a.ema9, 2));
+      rows += condRow('4h close above EMA9',
+                      conds.close_above_ema9,
+                      'close ' + fmt(a.close, 2));
+      rows += condRow('EMA9 above EMA21 (bull trend)',
+                      conds.ema9_above_ema21,
+                      'EMA9 ' + fmt(a.ema9, 2) + ' / EMA21 ' + fmt(a.ema21, 2));
+      rows += condRow('BTC daily bias BULL',
+                      conds.btc_bias_bull, '');
+    } else {
+      rows += condRow('4h high touched EMA9 (wick)',
+                      conds.wick_touch_ema9,
+                      'high ' + fmt(a.high, 2) + ' vs EMA9 ' + fmt(a.ema9, 2));
+      rows += condRow('4h close below EMA9',
+                      conds.close_below_ema9,
+                      'close ' + fmt(a.close, 2));
+      rows += condRow('EMA9 below EMA21 (bear trend)',
+                      conds.ema9_below_ema21,
+                      'EMA9 ' + fmt(a.ema9, 2) + ' / EMA21 ' + fmt(a.ema21, 2));
+      rows += condRow('BTC daily bias BEAR',
+                      conds.btc_bias_bear, '');
+    }
+
+    var atrLine = 'ATR14 ' + fmt(a.atr14, 2);
+    if (a.rr_config) atrLine += ' &nbsp;·&nbsp; SL ' + a.rr_config.sl + '×ATR / TP ' + a.rr_config.tp + '×ATR';
+
+    html += '<div class="card">'
+      + '<div class="card-header">'
+      + '<div><div class="card-title">' + base + ' <span style="color:#718096;font-size:12px;font-weight:500;">4h · ' + dir + ' setup path</span></div>'
+      + '<div class="card-sub">' + atrLine + '</div></div>'
+      + '<span class="' + verdictCls + '">' + verdictText + '</span>'
+      + '</div>'
+      + rows
+      + '</div>';
+  });
+
+  el.innerHTML = html || '<div class="empty">No asset data available.</div>';
+}
+
+// ─── Portfolio rendering ──────────────────────────────────────────────────────
+
+function terciléBar(value, lo, hi, side) {
+  // Render a bar with the current signal value marked against the tercile
+  // bounds. The bar fills toward whichever side (long/short) the value points.
+  if (value === null || lo === null || hi === null) {
+    return '<div class="bar-wrap"><div class="bar-fill" style="width:0%"></div></div>'
+         + '<div class="bar-legend"><span>—</span><span>insufficient data</span><span>—</span></div>';
+  }
+  // Extend the visual range slightly beyond lo/hi so we don't clip.
+  var span = Math.max(1e-9, hi - lo);
+  var vmin = lo - span * 0.5;
+  var vmax = hi + span * 0.5;
+  var pctVal = Math.max(0, Math.min(100, (value - vmin) / (vmax - vmin) * 100));
+  var pctLo  = (lo - vmin) / (vmax - vmin) * 100;
+  var pctHi  = (hi - vmin) / (vmax - vmin) * 100;
+
+  var fillCls = '';
+  if      (side === 'above_hi' || side === 'long_bias')  fillCls = 'long';
+  else if (side === 'below_lo' || side === 'short_bias') fillCls = 'short';
+
+  return '<div class="bar-wrap">'
+    + '<div class="bar-fill ' + fillCls + '" style="left:0;width:' + pctVal + '%"></div>'
+    + '<div class="bar-tick" style="left:' + pctLo + '%"></div>'
+    + '<div class="bar-tick" style="left:' + pctHi + '%"></div>'
+    + '</div>'
+    + '<div class="bar-legend">'
+    + '<span>' + fmt(vmin, 3) + '</span>'
+    + '<span>lo ' + fmt(lo, 3) + ' | hi ' + fmt(hi, 3) + '</span>'
+    + '<span>' + fmt(vmax, 3) + '</span>'
+    + '</div>';
+}
+
+function renderPortfolio(data) {
+  var el = document.getElementById('portfolio-container');
+  var signals = data && data.signals ? data.signals : {};
+  var keys = Object.keys(signals);
+  if (keys.length === 0) {
+    el.innerHTML = '<div class="empty">No portfolio signal snapshot yet — bot may still be initialising, or has not completed its first tick.</div>';
+    return;
+  }
+
+  // Group by strategy_key
+  var groups = {};
+  keys.forEach(function(k) {
+    var snap = signals[k];
+    var g = snap.strategy_key || 'unknown';
+    (groups[g] = groups[g] || []).push({slot: k, snap: snap});
+  });
+
+  var stratOrder = [
+    'S1_diff_vpt_multi', 'S2_addr_vpt_multi', 'S3_addr_chaikin_multi',
+    'S4_diff_rsi_xrp', 'S5_diff_bb_xrp',
+  ];
+  var html = '';
+  stratOrder.forEach(function(sk) {
+    var rows = groups[sk] || [];
+    if (rows.length === 0) return;
+    var first = rows[0].snap;
+    html += '<div class="strat-group">'
+         +  '<div class="strat-group-title">' + sk + '</div>'
+         +  '<div class="strat-group-sub">Bias: <b>' + (first.bias_signal || '?') + '</b>'
+         +  ' &nbsp;×&nbsp; Entry: <b>' + (first.entry_signal || '?') + '</b>'
+         +  ' — fires when both are aligned in the same direction.</div>';
+
+    rows.forEach(function(r) {
+      var s = r.snap;
+      var combined = s.combined || 'FLAT';
+      var verdictCls = s.position_open ? 'verdict open' : ('verdict ' + combined.toLowerCase());
+      var verdictText = s.position_open ? 'IN TRADE' : (combined === 'FLAT' ? 'NO SETUP' : combined + ' SETUP');
+
+      html += '<div class="card">'
+        + '<div class="card-header">'
+        + '<div><div class="card-title">' + (s.asset || '?') + '</div>'
+        + '<div class="card-sub">' + (s.reason || '') + '</div></div>'
+        + '<span class="' + verdictCls + '">' + verdictText + '</span>'
+        + '</div>'
+
+        + '<div class="bar-title"><span>Bias &middot; ' + (s.bias_signal || '') + '</span>'
+        + '<span class="bar-state ' + (s.bias_state || 'insufficient') + '">' + (s.bias_state || '—') + '</span></div>'
+        + terciléBar(s.bias_value, s.bias_lo, s.bias_hi, s.bias_state)
+
+        + '<div class="bar-title"><span>Entry &middot; ' + (s.entry_signal || '') + '</span>'
+        + '<span class="bar-state ' + (s.entry_side || 'insufficient') + '">' + (s.entry_side || '—') + '</span></div>'
+        + terciléBar(s.entry_value, s.entry_lo, s.entry_hi, s.entry_side)
+
+        + '</div>';
+    });
+
+    html += '</div>';
+  });
+
+  el.innerHTML = html || '<div class="empty">No portfolio signals available.</div>';
+}
+
+// ─── Load + poll ──────────────────────────────────────────────────────────────
+
+function load() {
+  fetch('/api/strategies/signals')
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      _data = d;
+      renderBtcBias(d.strat_1 && d.strat_1.signals && d.strat_1.signals.btc_bias);
+      renderStrat1(d.strat_1);
+      renderPortfolio(d.portfolio);
+      var upd = (d.strat_1 && d.strat_1.updated_at) || '';
+      if (upd) {
+        var t = new Date(upd);
+        document.getElementById('refresh-note').textContent =
+          'Auto-refreshes every 30s · Strat 1 last tick ' + t.toLocaleTimeString();
+      }
+    })
+    .catch(function(e) {
+      document.getElementById('refresh-note').textContent = 'Could not reach /api/strategies/signals';
+    });
+}
+
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>"""
+
+
+@app.get("/strategies", response_class=HTMLResponse)
+def strategies_view():
+    return STRATEGIES_HTML

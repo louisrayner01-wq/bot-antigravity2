@@ -38,7 +38,7 @@ from trade_logger    import TradeLogger
 # New rule-based components
 from strategy_rules    import (
     StrategyController, evaluate_signal, compute_daily_btc_bias,
-    Signal, LONG,
+    snapshot_signal, Signal, LONG,
 )
 from risk_manager_rules import RuleRiskManager, RulePosition
 
@@ -199,6 +199,11 @@ class RuleBot:
 
         # Last 4h candle timestamp seen per asset — used to gate entry checks
         self._last_4h_ts: Dict[str, pd.Timestamp] = {}
+
+        # Signal snapshot for /strategies dashboard page — replaced each tick,
+        # written into state.json so the dashboard can render firing conditions
+        # without recomputing indicators server-side.
+        self._signals_snapshot: Dict[str, object] = {}
 
         mode_emoji = "🟡 PAPER" if self.paper else "🔴 LIVE"
         self.log.info(
@@ -392,6 +397,7 @@ class RuleBot:
                 # it doesn't know about
                 "strategy_mode":   self.controller.name,
                 "risk_per_trade":  self.risk.risk_per_trade,
+                "signals":         self._signals_snapshot,
             }
             for path in self.state_paths:
                 try:
@@ -409,6 +415,8 @@ class RuleBot:
         # 1) BTC daily bias — driver for ALL assets' direction
         btc_symbol = next((a["symbol"] for a in self.assets if a["base"] == "BTC"), None)
         btc_bias = 0
+        btc_daily_close: Optional[float] = None
+        btc_daily_sma20: Optional[float] = None
         if btc_symbol:
             btc_d = self.fetch_1d(btc_symbol, limit=30)
             if btc_d is not None and not btc_d.empty:
@@ -416,9 +424,25 @@ class RuleBot:
                 today = pd.Timestamp.utcnow().tz_localize(None).normalize()
                 btc_d = btc_d[btc_d["timestamp"] < today]
                 btc_bias = compute_daily_btc_bias(btc_d)
+                if len(btc_d) >= 20:
+                    btc_daily_close = float(btc_d["close"].iloc[-1])
+                    btc_daily_sma20 = float(btc_d["close"].rolling(20).mean().iloc[-1])
         self.log.info("BTC daily bias = %s | %s",
                       {1: "BULL ✅", -1: "BEAR ⚠️", 0: "UNKNOWN"}.get(btc_bias, "?"),
                       self.risk.summary())
+
+        # Reset the dashboard snapshot for this tick — populated per-asset below.
+        snapshot_assets: Dict[str, dict] = {}
+        self._signals_snapshot = {
+            "updated_at": utcnow().isoformat(),
+            "strategy_mode": self.controller.name,
+            "btc_bias": {
+                "value":       btc_bias,
+                "daily_close": btc_daily_close,
+                "daily_sma20": btc_daily_sma20,
+            },
+            "assets": snapshot_assets,
+        }
 
         # 2) Per-asset: fetch 4h, evaluate signal, check exits
         signals: List[Signal] = []
@@ -428,6 +452,19 @@ class RuleBot:
             if df4 is None or df4.empty:
                 self.log.warning("No 4h data for %s — skipping", symbol)
                 continue
+
+            # Snapshot the firing conditions for the /strategies page. Uses the
+            # same last-closed 4h candle the entry logic uses, so what you see
+            # on the dashboard matches what the bot evaluates.
+            try:
+                snapshot_assets[base] = snapshot_signal(
+                    symbol, df4, btc_bias,
+                    btc_daily_close=btc_daily_close,
+                    btc_daily_sma20=btc_daily_sma20,
+                    use_last_closed=True,
+                )
+            except Exception as exc:
+                self.log.debug("snapshot_signal(%s) failed: %s", base, exc)
 
             # Live exits — check current price against any open position
             if base in self.risk.open_positions:

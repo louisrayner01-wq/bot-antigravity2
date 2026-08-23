@@ -203,6 +203,95 @@ def evaluate_signal(symbol: str,
                   reason=f"no setup (cl={cl:.2f} e9={e9:.2f} e21={e21:.2f} bias={btc_bias})")
 
 
+def snapshot_signal(symbol: str,
+                    df_4h: pd.DataFrame,
+                    btc_bias: int,
+                    btc_daily_close: float | None = None,
+                    btc_daily_sma20: float | None = None,
+                    *,
+                    use_last_closed: bool = True) -> dict:
+    """Full breakdown of the current 4h signal for the dashboard.
+
+    Returns raw indicator values and each of the 4 firing conditions so the UI
+    can render "how close is this to firing" bars. Never raises — on missing
+    data returns an entry with `ok=False` and a `reason`.
+    """
+    base = normalise_symbol(symbol)
+    rr = ASSET_RR.get(base)
+    out: dict = {
+        "base":         base,
+        "symbol":       symbol,
+        "side":         "FLAT",
+        "rr_config":    rr,
+        "btc_bias":     btc_bias,
+        "btc_daily_close": btc_daily_close,
+        "btc_daily_sma20": btc_daily_sma20,
+    }
+    if rr is None:
+        out["reason"] = f"no R:R config for {base}"
+        return out
+
+    df = compute_4h_indicators(df_4h)
+    if df is None or len(df) < 22:
+        out["reason"] = "not enough candles"
+        return out
+
+    idx = -2 if use_last_closed and len(df) >= 2 else -1
+    row = df.iloc[idx]
+    cl, lo, hi = row["close"], row["low"], row["high"]
+    e9, e21, atr14 = row["ema9"], row["ema21"], row["atr14"]
+    if any(pd.isna(x) for x in (cl, lo, hi, e9, e21, atr14)) or atr14 <= 0:
+        out["reason"] = "indicator NaN"
+        return out
+
+    out.update({
+        "close": float(cl),
+        "low":   float(lo),
+        "high":  float(hi),
+        "ema9":  float(e9),
+        "ema21": float(e21),
+        "atr14": float(atr14),
+    })
+
+    long_wick   = lo <= e9
+    short_wick  = hi >= e9
+    long_close  = cl > e9
+    short_close = cl < e9
+    ema_bull    = e9 > e21
+    ema_bear    = e9 < e21
+    bias_bull   = btc_bias == 1
+    bias_bear   = btc_bias == -1
+
+    out["conditions_long"] = {
+        "wick_touch_ema9":   bool(long_wick),
+        "close_above_ema9":  bool(long_close),
+        "ema9_above_ema21":  bool(ema_bull),
+        "btc_bias_bull":     bool(bias_bull),
+    }
+    out["conditions_short"] = {
+        "wick_touch_ema9":   bool(short_wick),
+        "close_below_ema9":  bool(short_close),
+        "ema9_below_ema21":  bool(ema_bear),
+        "btc_bias_bear":     bool(bias_bear),
+    }
+
+    if long_wick and long_close and ema_bull and bias_bull:
+        side = "LONG"
+        sl   = float(cl) - rr["sl"] * float(atr14)
+        tp   = float(cl) + rr["tp"] * float(atr14)
+    elif short_wick and short_close and ema_bear and bias_bear:
+        side = "SHORT"
+        sl   = float(cl) + rr["sl"] * float(atr14)
+        tp   = float(cl) - rr["tp"] * float(atr14)
+    else:
+        side = "FLAT"
+        sl = tp = None
+    out["side"]     = side
+    out["sl_price"] = sl
+    out["tp_price"] = tp
+    return out
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Strategy controller — assembles candidate signals and applies concurrency
 # ─────────────────────────────────────────────────────────────────────────────
